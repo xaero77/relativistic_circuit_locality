@@ -11,6 +11,18 @@ def _sub(a: Vector3, b: Vector3) -> Vector3:
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
 
+def _add(a: Vector3, b: Vector3) -> Vector3:
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def _scale(v: Vector3, scalar: float) -> Vector3:
+    return (v[0] * scalar, v[1] * scalar, v[2] * scalar)
+
+
+def _dot(a: Vector3, b: Vector3) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
 def _norm(v: Vector3) -> float:
     return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
 
@@ -38,6 +50,19 @@ class BranchPath:
     def time_window(self) -> tuple[float, float]:
         return (self.points[0].t, self.points[-1].t)
 
+    def position_at(self, t: float) -> Vector3:
+        start, stop = self.time_window
+        if t < start or t > stop:
+            raise ValueError("Requested time lies outside the branch support.")
+        if t == stop:
+            return self.points[-1].position
+
+        for left, right in zip(self.points, self.points[1:]):
+            if left.t <= t <= right.t:
+                weight = (t - left.t) / (right.t - left.t)
+                return _add(left.position, _scale(_sub(right.position, left.position), weight))
+        raise ValueError("Requested time could not be interpolated from trajectory points.")
+
 
 @dataclass(frozen=True)
 class SimulationResult:
@@ -46,36 +71,56 @@ class SimulationResult:
     phase_matrix: tuple[tuple[float, ...], ...]
 
 
-def _validate_pair(a: BranchPath, b: BranchPath) -> None:
-    if len(a.points) != len(b.points):
-        raise ValueError("Compared branches must share the same temporal discretization.")
-    for left, right in zip(a.points, b.points):
-        if abs(left.t - right.t) > 1e-12:
-            raise ValueError("Compared branches must share the same sample times.")
+def _overlap_window(*branches: BranchPath) -> tuple[float, float]:
+    start = max(branch.time_window[0] for branch in branches)
+    stop = min(branch.time_window[1] for branch in branches)
+    if start >= stop:
+        raise ValueError("Compared branches must have overlapping time support.")
+    return (start, stop)
 
 
-def _midpoint(a: TrajectoryPoint, b: TrajectoryPoint) -> TrajectoryPoint:
-    return TrajectoryPoint(
-        t=(a.t + b.t) / 2.0,
-        position=(
-            (a.position[0] + b.position[0]) / 2.0,
-            (a.position[1] + b.position[1]) / 2.0,
-            (a.position[2] + b.position[2]) / 2.0,
-        ),
+def _shared_time_grid(*branches: BranchPath) -> tuple[float, ...]:
+    start, stop = _overlap_window(*branches)
+    times = {start, stop}
+    for branch in branches:
+        for point in branch.points:
+            if start <= point.t <= stop:
+                times.add(point.t)
+    return tuple(sorted(times))
+
+
+def _segment_minimum_distance(
+    branch_a: BranchPath,
+    branch_b: BranchPath,
+    t_start: float,
+    t_stop: float,
+) -> float:
+    position_a_start = branch_a.position_at(t_start)
+    position_a_stop = branch_a.position_at(t_stop)
+    position_b_start = branch_b.position_at(t_start)
+    position_b_stop = branch_b.position_at(t_stop)
+
+    relative_start = _sub(position_a_start, position_b_start)
+    relative_velocity = _sub(
+        _scale(_sub(position_a_stop, position_a_start), 1.0 / (t_stop - t_start)),
+        _scale(_sub(position_b_stop, position_b_start), 1.0 / (t_stop - t_start)),
     )
+    duration = t_stop - t_start
+    speed_sq = _dot(relative_velocity, relative_velocity)
 
+    if speed_sq <= 1e-18:
+        return _norm(relative_start)
 
-def _pairwise_spacelike_margin(a: TrajectoryPoint, b: TrajectoryPoint, light_speed: float) -> float:
-    spatial_distance = _norm(_sub(a.position, b.position))
-    timelike_reach = light_speed * abs(a.t - b.t)
-    return spatial_distance - timelike_reach
+    tau = -_dot(relative_start, relative_velocity) / speed_sq
+    tau = min(max(tau, 0.0), duration)
+    return _norm(_add(relative_start, _scale(relative_velocity, tau)))
 
 
 def compute_closest_approach(branch_a: BranchPath, branch_b: BranchPath) -> float:
-    _validate_pair(branch_a, branch_b)
+    grid = _shared_time_grid(branch_a, branch_b)
     return min(
-        _norm(_sub(point_a.position, point_b.position))
-        for point_a, point_b in zip(branch_a.points, branch_b.points)
+        _segment_minimum_distance(branch_a, branch_b, t_start, t_stop)
+        for t_start, t_stop in zip(grid, grid[1:])
     )
 
 
@@ -88,12 +133,10 @@ def field_mediation_intervals(
 ) -> tuple[tuple[float, float], ...]:
     if not branches_a or not branches_b:
         return ()
+    if light_speed <= 0.0:
+        raise ValueError("light_speed must be positive.")
 
-    base_times = tuple(point.t for point in branches_a[0].points)
-    for collection in (branches_a, branches_b):
-        for branch in collection:
-            if tuple(point.t for point in branch.points) != base_times:
-                raise ValueError("All branches must share the same temporal discretization.")
+    base_times = _shared_time_grid(*branches_a, *branches_b)
 
     intervals: list[tuple[float, float]] = []
     current_start: float | None = None
@@ -102,21 +145,9 @@ def field_mediation_intervals(
         segment_is_spacelike = True
         for branch_a in branches_a:
             for branch_b in branches_b:
-                candidates = (
-                    branch_a.points[index],
-                    branch_a.points[index + 1],
-                    _midpoint(branch_a.points[index], branch_a.points[index + 1]),
-                )
-                others = (
-                    branch_b.points[index],
-                    branch_b.points[index + 1],
-                    _midpoint(branch_b.points[index], branch_b.points[index + 1]),
-                )
-                if any(
-                    _pairwise_spacelike_margin(point_a, point_b, light_speed) <= tolerance
-                    for point_a in candidates
-                    for point_b in others
-                ):
+                t_start = base_times[index]
+                t_stop = base_times[index + 1]
+                if _segment_minimum_distance(branch_a, branch_b, t_start, t_stop) <= tolerance:
                     segment_is_spacelike = False
                     break
             if not segment_is_spacelike:
@@ -169,12 +200,18 @@ def _branch_pair_phase(
     mass: float,
     cutoff: float,
 ) -> float:
-    _validate_pair(branch_a, branch_b)
+    grid = _shared_time_grid(branch_a, branch_b)
     phase = 0.0
-    for index in range(len(branch_a.points) - 1):
-        point_a = _midpoint(branch_a.points[index], branch_a.points[index + 1])
-        point_b = _midpoint(branch_b.points[index], branch_b.points[index + 1])
-        dt = branch_a.points[index + 1].t - branch_a.points[index].t
+    for t_start, t_stop in zip(grid, grid[1:]):
+        point_a = TrajectoryPoint(
+            t=(t_start + t_stop) / 2.0,
+            position=branch_a.position_at((t_start + t_stop) / 2.0),
+        )
+        point_b = TrajectoryPoint(
+            t=(t_start + t_stop) / 2.0,
+            position=branch_b.position_at((t_start + t_stop) / 2.0),
+        )
+        dt = t_stop - t_start
         distance = _norm(_sub(point_a.position, point_b.position))
         phase -= branch_a.charge * branch_b.charge * _yukawa_kernel(distance, mass, cutoff) * dt
     return phase

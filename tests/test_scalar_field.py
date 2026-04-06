@@ -25,12 +25,27 @@ class ScalarFieldTests(unittest.TestCase):
         right = branch("B0", 1.0, [(0.0, (3.0, 0.0, 0.0)), (1.0, (1.5, 0.0, 0.0))])
         self.assertAlmostEqual(compute_closest_approach(left, right), 2.5)
 
+    def test_closest_approach_uses_continuous_segment_minimum_with_mismatched_sampling(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (1.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])
+        self.assertAlmostEqual(compute_closest_approach(left, right), 1.0)
+
     def test_full_interval_is_field_mediated_when_branches_stay_spacelike(self) -> None:
         branches_a = (
             branch("A0", 1.0, [(0.0, (-3.0, 0.0, 0.0)), (1.0, (-3.0, 0.0, 0.0)), (2.0, (-3.0, 0.0, 0.0))]),
         )
         branches_b = (
             branch("B0", 1.0, [(0.0, (3.0, 0.0, 0.0)), (1.0, (3.0, 0.0, 0.0)), (2.0, (3.0, 0.0, 0.0))]),
+        )
+        self.assertEqual(field_mediation_intervals(branches_a, branches_b), ((0.0, 2.0),))
+        self.assertTrue(is_field_mediated(branches_a, branches_b))
+
+    def test_field_mediation_intervals_support_mismatched_sampling(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (1.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))]),
         )
         self.assertEqual(field_mediation_intervals(branches_a, branches_b), ((0.0, 2.0),))
         self.assertTrue(is_field_mediated(branches_a, branches_b))
@@ -69,6 +84,18 @@ class ScalarFieldTests(unittest.TestCase):
         )
         matrix = compute_branch_phase_matrix(branches_a, branches_b, mass=0.25)
         self.assertNotEqual(compute_entanglement_phase(matrix, 0, 1, 0, 1), 0.0)
+
+    def test_phase_matrix_is_stable_under_time_resampling(self) -> None:
+        coarse = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        fine = branch(
+            "A0",
+            1.0,
+            [(0.0, (-2.0, 0.0, 0.0)), (1.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))],
+        )
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (1.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        coarse_matrix = compute_branch_phase_matrix((coarse,), (target,), mass=0.5)
+        fine_matrix = compute_branch_phase_matrix((fine,), (target,), mass=0.5)
+        self.assertAlmostEqual(coarse_matrix[0][0], fine_matrix[0][0])
 
 
 if __name__ == "__main__":

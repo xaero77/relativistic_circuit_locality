@@ -30,6 +30,7 @@
 - 결과를 한 번에 묶는 `SimulationResult` 및 `simulate` 구현
 - 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가
 - `unittest` 기반 회귀 테스트 추가
+- 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
 
 ## 추가해야 할 기능
 
@@ -43,7 +44,7 @@
 ## 현재 구현의 한계
 
 - QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
-- 연속 시공간 적분을 직접 수행하지 않고, 시간 샘플 기반의 이산화와 Yukawa 준정적 근사를 사용한다.
+- 연속 시공간 적분을 직접 수행하지 않고, piecewise linear worldline 과 Yukawa 준정적 근사를 사용한다.
 - microcausality 자체를 commutator 적분으로 평가하지 않고, spacelike separation criterion 으로 판정한다.
 
 ## 사용 방법
