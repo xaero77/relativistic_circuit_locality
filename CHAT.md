@@ -45,8 +45,9 @@
 
 ## 현재 구현의 한계
 
-- QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
-- 전체 4차원 장 방정식을 직접 풀지는 않으며, piecewise linear worldline 위의 연속 시간 적분을 저차 Gauss-Legendre quadrature 로 근사한 `instantaneous`/single-source `retarded` Yukawa 모델을 사용한다.
+- 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded` 전파 모드 추가로 일부 개선했다. 다만 아직도 single-source retarded Yukawa 근사에 머문다.
+- 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature 로 개선했다. 다만 전체 4차원 장 방정식을 직접 푸는 적분기는 아니다.
+- 구현 전체는 여전히 QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
 - microcausality 자체를 commutator 적분으로 평가하지 않고, spacelike separation criterion 으로 판정한다.
 
 ## 사용 방법
