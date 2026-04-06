@@ -7,6 +7,10 @@ name = "relativistic-circuit-locality"
 version = "0.1.0"
 description = "Reference implementation of the core scalar-field locality constructions from arXiv:2305.05645."
 requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.4",
+    "pip>=26.0.1",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
