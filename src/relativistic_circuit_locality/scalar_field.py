@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import exp, inf, pi, sqrt
+from typing import Literal
 
 
 Vector3 = tuple[float, float, float]
@@ -201,25 +202,61 @@ def _yukawa_kernel(distance: float, mass: float, cutoff: float) -> float:
     return exp(-mass * effective_distance) / (4.0 * pi * effective_distance)
 
 
+def _retarded_source_time(
+    source: BranchPath,
+    target: BranchPath,
+    target_time: float,
+    *,
+    light_speed: float,
+    iterations: int = 12,
+    tolerance: float = 1e-12,
+) -> float | None:
+    source_start, source_stop = source.time_window
+    guess = min(max(target_time, source_start), source_stop)
+
+    for _ in range(iterations):
+        distance = _norm(_sub(target.position_at(target_time), source.position_at(guess)))
+        updated = target_time - distance / light_speed
+        if updated < source_start or updated > source_stop:
+            return None
+        if abs(updated - guess) <= tolerance:
+            return updated
+        guess = updated
+
+    distance = _norm(_sub(target.position_at(target_time), source.position_at(guess)))
+    updated = target_time - distance / light_speed
+    if source_start <= updated <= source_stop:
+        return updated
+    return None
+
+
 def _branch_pair_phase(
     branch_a: BranchPath,
     branch_b: BranchPath,
     *,
     mass: float,
     cutoff: float,
+    propagation: Literal["instantaneous", "retarded"],
+    light_speed: float,
 ) -> float:
     grid = _shared_time_grid(branch_a, branch_b)
     phase = 0.0
     for t_start, t_stop in zip(grid, grid[1:]):
         # 각 구간이 이미 선형이므로 중점 적분만으로도 충분하다.
-        point_a = TrajectoryPoint(
-            t=(t_start + t_stop) / 2.0,
-            position=branch_a.position_at((t_start + t_stop) / 2.0),
-        )
-        point_b = TrajectoryPoint(
-            t=(t_start + t_stop) / 2.0,
-            position=branch_b.position_at((t_start + t_stop) / 2.0),
-        )
+        midpoint = (t_start + t_stop) / 2.0
+        point_b = TrajectoryPoint(t=midpoint, position=branch_b.position_at(midpoint))
+        if propagation == "instantaneous":
+            point_a = TrajectoryPoint(t=midpoint, position=branch_a.position_at(midpoint))
+        else:
+            retarded_time = _retarded_source_time(
+                branch_a,
+                branch_b,
+                midpoint,
+                light_speed=light_speed,
+            )
+            if retarded_time is None:
+                continue
+            point_a = TrajectoryPoint(t=retarded_time, position=branch_a.position_at(retarded_time))
         dt = t_stop - t_start
         distance = _norm(_sub(point_a.position, point_b.position))
         phase -= branch_a.charge * branch_b.charge * _yukawa_kernel(distance, mass, cutoff) * dt
@@ -232,10 +269,23 @@ def compute_branch_phase_matrix(
     *,
     mass: float,
     cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded"] = "instantaneous",
+    light_speed: float = 1.0,
 ) -> tuple[tuple[float, ...], ...]:
+    if light_speed <= 0.0:
+        raise ValueError("light_speed must be positive.")
+    if propagation not in {"instantaneous", "retarded"}:
+        raise ValueError("propagation must be either 'instantaneous' or 'retarded'.")
     return tuple(
         tuple(
-            _branch_pair_phase(branch_a, branch_b, mass=mass, cutoff=cutoff)
+            _branch_pair_phase(
+                branch_a,
+                branch_b,
+                mass=mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
+            )
             for branch_b in branches_b
         )
         for branch_a in branches_a
@@ -265,6 +315,7 @@ def simulate(
     cutoff: float = 1e-9,
     light_speed: float = 1.0,
     tolerance: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded"] = "instantaneous",
 ) -> SimulationResult:
     closest_approach = inf
     for branch_a in branches_a:
@@ -280,5 +331,12 @@ def simulate(
             light_speed=light_speed,
             tolerance=tolerance,
         ),
-        phase_matrix=compute_branch_phase_matrix(branches_a, branches_b, mass=mass, cutoff=cutoff),
+        phase_matrix=compute_branch_phase_matrix(
+            branches_a,
+            branches_b,
+            mass=mass,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+        ),
     )

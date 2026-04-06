@@ -1,6 +1,7 @@
 """스칼라장 궤적 및 위상 도우미에 대한 회귀 테스트."""
 
 import unittest
+from math import pi
 
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
@@ -100,6 +101,33 @@ class ScalarFieldTests(unittest.TestCase):
         coarse_matrix = compute_branch_phase_matrix((coarse,), (target,), mass=0.5)
         fine_matrix = compute_branch_phase_matrix((fine,), (target,), mass=0.5)
         self.assertAlmostEqual(coarse_matrix[0][0], fine_matrix[0][0])
+
+    def test_retarded_phase_is_smaller_when_signal_has_not_fully_arrived(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        instantaneous = compute_branch_phase_matrix((source,), (target,), mass=0.0)
+        retarded = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="retarded")
+        self.assertLess(abs(retarded[0][0]), abs(instantaneous[0][0]))
+        self.assertAlmostEqual(retarded[0][0], -1.0 / (4.0 * pi), places=12)
+
+    def test_retarded_phase_respects_light_speed_parameter(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        faster = compute_branch_phase_matrix(
+            (source,),
+            (target,),
+            mass=0.0,
+            propagation="retarded",
+            light_speed=2.0,
+        )
+        slower = compute_branch_phase_matrix(
+            (source,),
+            (target,),
+            mass=0.0,
+            propagation="retarded",
+            light_speed=0.5,
+        )
+        self.assertLess(abs(slower[0][0]), abs(faster[0][0]))
 
 
 if __name__ == "__main__":

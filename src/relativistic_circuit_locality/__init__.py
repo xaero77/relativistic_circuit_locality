@@ -9,6 +9,7 @@ from .scalar_field import (
     compute_entanglement_phase,
     field_mediation_intervals,
     is_field_mediated,
+    simulate,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "compute_entanglement_phase",
     "field_mediation_intervals",
     "is_field_mediated",
+    "simulate",
 ]
