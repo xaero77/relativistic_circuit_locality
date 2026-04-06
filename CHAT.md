@@ -31,8 +31,10 @@
 - branch matrix 로부터 qudit 얽힘에 대응하는 상대 위상 `compute_entanglement_phase` 구현
 - branch pair 별 self-energy, 방향성 있는 cross-term, 대칭 interaction, total phase 를 분리해 주는 `analyze_branch_pair_phase` 구현
 - branch 집합 전체에 대해 self phase 벡터, directed cross matrix, symmetric interaction matrix, total matrix 를 한 번에 계산하는 `analyze_phase_decomposition` 구현
+- isotropic Gaussian width 를 가진 branch 별 finite-width wavepacket 모델에 대해 Yukawa kernel 을 상대 반경 분포 위에서 직접 적분하는 `compute_wavepacket_phase_matrix` 구현
+- finite-width wavepacket 모델에서도 self/cross/interaction/total 분해를 계산하는 `analyze_wavepacket_phase_decomposition` 구현
 - 결과를 한 번에 묶는 `SimulationResult` 및 `simulate` 구현
-- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded` 위상 비교, branch pair phase 분해 출력 지원
+- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상 출력 지원
 - `unittest` 기반 회귀 테스트 추가
 - 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
 
@@ -40,7 +42,6 @@
 
 - 식 (84), (85), (90), (103)을 직접 따르는 Fourier-space displacement operator 수치 구현
 - massive Klein-Gordon retarded solution 기반의 완전한 `phi_rs` 계산기
-- branch 별 compact support 대신 finite-width wavepacket 을 직접 적분하는 모델
 - 논문 Appendix D 수준의 coherent-state 진화 추적
 - 다입자 일반화와 gauge field/general relativity 버전
 
@@ -49,6 +50,7 @@
 - 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded` 전파 모드 추가로 일부 개선했다. 다만 아직도 single-source retarded Yukawa 근사에 머문다.
 - 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature 로 개선했다. 다만 전체 4차원 장 방정식을 직접 푸는 적분기는 아니다.
 - self-energy 와 cross-term 분해는 추가했지만, 논문 식 (36)의 연속장 분해를 직접 푼 것이 아니라 현재 Yukawa 기반 수치 모델 위에서 해석한 것이다.
+- finite-width wavepacket 은 isotropic Gaussian profile 로 모델링했고, 3차원 상대 반경 분포에 대한 수치 적분으로 처리한다. 아직 일반적인 비등방/비가우시안 packet 은 지원하지 않는다.
 - 구현 전체는 여전히 QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
 - microcausality 자체를 commutator 적분으로 평가하지 않고, spacelike separation criterion 으로 판정한다.
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 from dataclasses import dataclass
-from math import exp, inf, pi, sqrt
-from typing import Literal
+from math import exp, inf, pi, sinh, sqrt
+from typing import Callable, Literal
 
 
 Vector3 = tuple[float, float, float]
@@ -95,6 +95,9 @@ class PhaseDecompositionResult:
     directed_cross_matrix_ba: tuple[tuple[float, ...], ...]
     interaction_matrix: tuple[tuple[float, ...], ...]
     total_matrix: tuple[tuple[float, ...], ...]
+
+
+WidthSpec = float | tuple[float, ...]
 
 
 def _overlap_window(*branches: BranchPath) -> tuple[float, float]:
@@ -274,15 +277,14 @@ def _retarded_source_time(
     return None
 
 
-def _branch_pair_phase(
+def _pair_phase_integral(
     branch_a: BranchPath,
     branch_b: BranchPath,
     *,
-    mass: float,
-    cutoff: float,
     propagation: Literal["instantaneous", "retarded"],
     light_speed: float,
     quadrature_order: int,
+    kernel: Callable[[float], float],
 ) -> float:
     grid = _shared_time_grid(branch_a, branch_b)
     nodes, weights = _gauss_legendre_rule(quadrature_order)
@@ -307,9 +309,86 @@ def _branch_pair_phase(
                     continue
                 point_a = TrajectoryPoint(t=retarded_time, position=branch_a.position_at(retarded_time))
             distance = _norm(_sub(point_a.position, point_b.position))
-            segment_integral += weight * _yukawa_kernel(distance, mass, cutoff)
+            segment_integral += weight * kernel(distance)
         phase -= branch_a.charge * branch_b.charge * segment_integral * half_width
     return phase
+
+
+def _branch_pair_phase(
+    branch_a: BranchPath,
+    branch_b: BranchPath,
+    *,
+    mass: float,
+    cutoff: float,
+    propagation: Literal["instantaneous", "retarded"],
+    light_speed: float,
+    quadrature_order: int,
+) -> float:
+    return _pair_phase_integral(
+        branch_a,
+        branch_b,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        kernel=lambda distance: _yukawa_kernel(distance, mass, cutoff),
+    )
+
+
+def _resolve_widths(widths: WidthSpec, count: int) -> tuple[float, ...]:
+    if isinstance(widths, tuple):
+        if len(widths) != count:
+            raise ValueError("Wavepacket width tuple must match the number of branches.")
+        resolved = widths
+    else:
+        resolved = tuple(widths for _ in range(count))
+    if any(width < 0.0 for width in resolved):
+        raise ValueError("Wavepacket widths must be non-negative.")
+    return resolved
+
+
+def _gaussian_relative_radius_density(radius: float, center_distance: float, combined_width: float) -> float:
+    if combined_width <= 0.0:
+        raise ValueError("combined_width must be positive.")
+    variance = combined_width * combined_width
+    if center_distance <= 1e-12:
+        return sqrt(2.0 / pi) * (radius * radius / (combined_width**3)) * exp(-(radius * radius) / (2.0 * variance))
+    scaled = radius * center_distance / variance
+    return (
+        sqrt(2.0 / pi)
+        * (radius / (combined_width * center_distance))
+        * exp(-(radius * radius + center_distance * center_distance) / (2.0 * variance))
+        * sinh(scaled)
+    )
+
+
+def _smeared_yukawa_kernel(
+    center_distance: float,
+    *,
+    mass: float,
+    cutoff: float,
+    combined_width: float,
+    radial_quadrature_order: int,
+    radial_subdivisions: int,
+) -> float:
+    if combined_width <= 0.0:
+        return _yukawa_kernel(center_distance, mass, cutoff)
+    if radial_subdivisions <= 0:
+        raise ValueError("radial_subdivisions must be positive.")
+    nodes, weights = _gauss_legendre_rule(radial_quadrature_order)
+    upper = max(center_distance + 8.0 * combined_width, cutoff + 8.0 * combined_width)
+    total = 0.0
+    for step in range(radial_subdivisions):
+        left = upper * step / radial_subdivisions
+        right = upper * (step + 1) / radial_subdivisions
+        midpoint = (left + right) / 2.0
+        half_width = (right - left) / 2.0
+        segment = 0.0
+        for node, weight in zip(nodes, weights):
+            radius = midpoint + half_width * node
+            density = _gaussian_relative_radius_density(radius, center_distance, combined_width)
+            segment += weight * density * _yukawa_kernel(radius, mass, cutoff)
+        total += segment * half_width
+    return total
 
 
 def compute_branch_phase_matrix(
@@ -455,6 +534,150 @@ def analyze_phase_decomposition(
         propagation=propagation,
         light_speed=light_speed,
         quadrature_order=quadrature_order,
+    )
+    interaction_matrix = tuple(
+        tuple(
+            0.5 * (directed_cross_matrix_ab[r][s] + directed_cross_matrix_ba[s][r])
+            for s in range(len(branches_b))
+        )
+        for r in range(len(branches_a))
+    )
+    total_matrix = tuple(
+        tuple(self_phases_a[r] + interaction_matrix[r][s] + self_phases_b[s] for s in range(len(branches_b)))
+        for r in range(len(branches_a))
+    )
+    return PhaseDecompositionResult(
+        self_phases_a=self_phases_a,
+        self_phases_b=self_phases_b,
+        directed_cross_matrix_ab=directed_cross_matrix_ab,
+        directed_cross_matrix_ba=directed_cross_matrix_ba,
+        interaction_matrix=interaction_matrix,
+        total_matrix=total_matrix,
+    )
+
+
+def compute_wavepacket_phase_matrix(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    widths_a: WidthSpec,
+    widths_b: WidthSpec,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    radial_quadrature_order: int = 5,
+    radial_subdivisions: int = 24,
+) -> tuple[tuple[float, ...], ...]:
+    if light_speed <= 0.0:
+        raise ValueError("light_speed must be positive.")
+    if propagation not in {"instantaneous", "retarded"}:
+        raise ValueError("propagation must be either 'instantaneous' or 'retarded'.")
+    widths_a_resolved = _resolve_widths(widths_a, len(branches_a))
+    widths_b_resolved = _resolve_widths(widths_b, len(branches_b))
+    return tuple(
+        tuple(
+            _pair_phase_integral(
+                branch_a,
+                branch_b,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+                kernel=lambda distance, wa=widths_a_resolved[r], wb=widths_b_resolved[s]: _smeared_yukawa_kernel(
+                    distance,
+                    mass=mass,
+                    cutoff=cutoff,
+                    combined_width=sqrt(wa * wa + wb * wb),
+                    radial_quadrature_order=radial_quadrature_order,
+                    radial_subdivisions=radial_subdivisions,
+                ),
+            )
+            for s, branch_b in enumerate(branches_b)
+        )
+        for r, branch_a in enumerate(branches_a)
+    )
+
+
+def analyze_wavepacket_phase_decomposition(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    widths_a: WidthSpec,
+    widths_b: WidthSpec,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    radial_quadrature_order: int = 5,
+    radial_subdivisions: int = 24,
+) -> PhaseDecompositionResult:
+    widths_a_resolved = _resolve_widths(widths_a, len(branches_a))
+    widths_b_resolved = _resolve_widths(widths_b, len(branches_b))
+    self_phases_a = tuple(
+        0.5
+        * _pair_phase_integral(
+            branch,
+            branch,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            kernel=lambda distance, width=widths_a_resolved[index]: _smeared_yukawa_kernel(
+                distance,
+                mass=mass,
+                cutoff=cutoff,
+                combined_width=sqrt(2.0) * width,
+                radial_quadrature_order=radial_quadrature_order,
+                radial_subdivisions=radial_subdivisions,
+            ),
+        )
+        for index, branch in enumerate(branches_a)
+    )
+    self_phases_b = tuple(
+        0.5
+        * _pair_phase_integral(
+            branch,
+            branch,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            kernel=lambda distance, width=widths_b_resolved[index]: _smeared_yukawa_kernel(
+                distance,
+                mass=mass,
+                cutoff=cutoff,
+                combined_width=sqrt(2.0) * width,
+                radial_quadrature_order=radial_quadrature_order,
+                radial_subdivisions=radial_subdivisions,
+            ),
+        )
+        for index, branch in enumerate(branches_b)
+    )
+    directed_cross_matrix_ab = compute_wavepacket_phase_matrix(
+        branches_a,
+        branches_b,
+        widths_a=widths_a_resolved,
+        widths_b=widths_b_resolved,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        radial_quadrature_order=radial_quadrature_order,
+        radial_subdivisions=radial_subdivisions,
+    )
+    directed_cross_matrix_ba = compute_wavepacket_phase_matrix(
+        branches_b,
+        branches_a,
+        widths_a=widths_b_resolved,
+        widths_b=widths_a_resolved,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        radial_quadrature_order=radial_quadrature_order,
+        radial_subdivisions=radial_subdivisions,
     )
     interaction_matrix = tuple(
         tuple(

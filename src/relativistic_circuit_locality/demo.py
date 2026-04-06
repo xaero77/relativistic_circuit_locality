@@ -6,6 +6,7 @@ from .scalar_field import (
     BranchPath,
     TrajectoryPoint,
     analyze_branch_pair_phase,
+    compute_wavepacket_phase_matrix,
     compute_entanglement_phase,
     simulate,
 )
@@ -42,6 +43,14 @@ def main() -> None:
         "retarded_relative_entangling_phase =",
         round(compute_entanglement_phase(retarded.phase_matrix, 0, 1, 0, 1), 6),
     )
+    wavepacket_matrix = compute_wavepacket_phase_matrix(
+        branches_a,
+        branches_b,
+        widths_a=(0.3, 0.5),
+        widths_b=(0.3, 0.5),
+        mass=0.5,
+    )
+    print("wavepacket_phase_matrix =", wavepacket_matrix)
     pair_breakdown = analyze_branch_pair_phase(
         branches_a[0],
         branches_b[0],

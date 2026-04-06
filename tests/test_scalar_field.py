@@ -8,9 +8,11 @@ from relativistic_circuit_locality.scalar_field import (
     TrajectoryPoint,
     analyze_branch_pair_phase,
     analyze_phase_decomposition,
+    analyze_wavepacket_phase_decomposition,
     compute_branch_phase_matrix,
     compute_closest_approach,
     compute_entanglement_phase,
+    compute_wavepacket_phase_matrix,
     field_mediation_intervals,
     is_field_mediated,
 )
@@ -179,6 +181,45 @@ class ScalarFieldTests(unittest.TestCase):
             branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))]),
         )
         decomposition = analyze_phase_decomposition(branches_a, branches_b, mass=0.5)
+        for r in range(len(branches_a)):
+            for s in range(len(branches_b)):
+                self.assertAlmostEqual(
+                    decomposition.total_matrix[r][s],
+                    decomposition.self_phases_a[r]
+                    + decomposition.interaction_matrix[r][s]
+                    + decomposition.self_phases_b[s],
+                )
+
+    def test_wavepacket_phase_recovers_point_particle_limit_at_zero_width(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        pointlike = compute_branch_phase_matrix((left,), (right,), mass=0.5)
+        wavepacket = compute_wavepacket_phase_matrix((left,), (right,), widths_a=0.0, widths_b=0.0, mass=0.5)
+        self.assertAlmostEqual(pointlike[0][0], wavepacket[0][0])
+
+    def test_wavepacket_width_softens_cross_phase_magnitude(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        narrow = compute_wavepacket_phase_matrix((left,), (right,), widths_a=0.1, widths_b=0.1, mass=0.5)
+        wide = compute_wavepacket_phase_matrix((left,), (right,), widths_a=0.8, widths_b=0.8, mass=0.5)
+        self.assertLess(abs(wide[0][0]), abs(narrow[0][0]))
+
+    def test_wavepacket_phase_decomposition_total_matrix_combines_terms(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))]),
+            branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))]),
+            branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))]),
+        )
+        decomposition = analyze_wavepacket_phase_decomposition(
+            branches_a,
+            branches_b,
+            widths_a=(0.3, 0.5),
+            widths_b=(0.4, 0.6),
+            mass=0.5,
+        )
         for r in range(len(branches_a)):
             for s in range(len(branches_b)):
                 self.assertAlmostEqual(
