@@ -77,6 +77,26 @@ class SimulationResult:
     phase_matrix: tuple[tuple[float, ...], ...]
 
 
+@dataclass(frozen=True)
+class PairPhaseBreakdown:
+    self_phase_a: float
+    self_phase_b: float
+    directed_cross_phase_ab: float
+    directed_cross_phase_ba: float
+    interaction_phase: float
+    total_phase: float
+
+
+@dataclass(frozen=True)
+class PhaseDecompositionResult:
+    self_phases_a: tuple[float, ...]
+    self_phases_b: tuple[float, ...]
+    directed_cross_matrix_ab: tuple[tuple[float, ...], ...]
+    directed_cross_matrix_ba: tuple[tuple[float, ...], ...]
+    interaction_matrix: tuple[tuple[float, ...], ...]
+    total_matrix: tuple[tuple[float, ...], ...]
+
+
 def _overlap_window(*branches: BranchPath) -> tuple[float, float]:
     start = max(branch.time_window[0] for branch in branches)
     stop = min(branch.time_window[1] for branch in branches)
@@ -322,6 +342,138 @@ def compute_branch_phase_matrix(
             for branch_b in branches_b
         )
         for branch_a in branches_a
+    )
+
+
+def analyze_branch_pair_phase(
+    branch_a: BranchPath,
+    branch_b: BranchPath,
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> PairPhaseBreakdown:
+    self_phase_a = 0.5 * _branch_pair_phase(
+        branch_a,
+        branch_a,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    self_phase_b = 0.5 * _branch_pair_phase(
+        branch_b,
+        branch_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    directed_cross_phase_ab = _branch_pair_phase(
+        branch_a,
+        branch_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    directed_cross_phase_ba = _branch_pair_phase(
+        branch_b,
+        branch_a,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    interaction_phase = 0.5 * (directed_cross_phase_ab + directed_cross_phase_ba)
+    return PairPhaseBreakdown(
+        self_phase_a=self_phase_a,
+        self_phase_b=self_phase_b,
+        directed_cross_phase_ab=directed_cross_phase_ab,
+        directed_cross_phase_ba=directed_cross_phase_ba,
+        interaction_phase=interaction_phase,
+        total_phase=self_phase_a + interaction_phase + self_phase_b,
+    )
+
+
+def analyze_phase_decomposition(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> PhaseDecompositionResult:
+    self_phases_a = tuple(
+        0.5
+        * _branch_pair_phase(
+            branch,
+            branch,
+            mass=mass,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+        for branch in branches_a
+    )
+    self_phases_b = tuple(
+        0.5
+        * _branch_pair_phase(
+            branch,
+            branch,
+            mass=mass,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+        for branch in branches_b
+    )
+    directed_cross_matrix_ab = compute_branch_phase_matrix(
+        branches_a,
+        branches_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    directed_cross_matrix_ba = compute_branch_phase_matrix(
+        branches_b,
+        branches_a,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    interaction_matrix = tuple(
+        tuple(
+            0.5 * (directed_cross_matrix_ab[r][s] + directed_cross_matrix_ba[s][r])
+            for s in range(len(branches_b))
+        )
+        for r in range(len(branches_a))
+    )
+    total_matrix = tuple(
+        tuple(self_phases_a[r] + interaction_matrix[r][s] + self_phases_b[s] for s in range(len(branches_b)))
+        for r in range(len(branches_a))
+    )
+    return PhaseDecompositionResult(
+        self_phases_a=self_phases_a,
+        self_phases_b=self_phases_b,
+        directed_cross_matrix_ab=directed_cross_matrix_ab,
+        directed_cross_matrix_ba=directed_cross_matrix_ba,
+        interaction_matrix=interaction_matrix,
+        total_matrix=total_matrix,
     )
 
 

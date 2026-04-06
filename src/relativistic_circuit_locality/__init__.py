@@ -1,9 +1,13 @@
 """상대론적 회로 국소성 도우미의 공개 API를 내보낸다."""
 
 from .scalar_field import (
+    PairPhaseBreakdown,
+    PhaseDecompositionResult,
     BranchPath,
     SimulationResult,
     TrajectoryPoint,
+    analyze_branch_pair_phase,
+    analyze_phase_decomposition,
     compute_branch_phase_matrix,
     compute_closest_approach,
     compute_entanglement_phase,
@@ -13,9 +17,13 @@ from .scalar_field import (
 )
 
 __all__ = [
+    "PairPhaseBreakdown",
+    "PhaseDecompositionResult",
     "BranchPath",
     "SimulationResult",
     "TrajectoryPoint",
+    "analyze_branch_pair_phase",
+    "analyze_phase_decomposition",
     "compute_branch_phase_matrix",
     "compute_closest_approach",
     "compute_entanglement_phase",

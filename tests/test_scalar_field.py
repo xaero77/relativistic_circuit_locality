@@ -6,6 +6,8 @@ from math import asinh, pi
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
     TrajectoryPoint,
+    analyze_branch_pair_phase,
+    analyze_phase_decomposition,
     compute_branch_phase_matrix,
     compute_closest_approach,
     compute_entanglement_phase,
@@ -143,6 +145,48 @@ class ScalarFieldTests(unittest.TestCase):
         target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0))])
         with self.assertRaises(ValueError):
             compute_branch_phase_matrix((source,), (target,), mass=0.0, quadrature_order=0)
+
+    def test_phase_breakdown_matches_instantaneous_cross_matrix(self) -> None:
+        branch_a = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        branch_b = branch("B0", 2.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        breakdown = analyze_branch_pair_phase(branch_a, branch_b, mass=0.5)
+        matrix = compute_branch_phase_matrix((branch_a,), (branch_b,), mass=0.5)
+        self.assertAlmostEqual(breakdown.directed_cross_phase_ab, matrix[0][0])
+        self.assertAlmostEqual(breakdown.directed_cross_phase_ab, breakdown.directed_cross_phase_ba)
+        self.assertAlmostEqual(breakdown.interaction_phase, matrix[0][0])
+        self.assertAlmostEqual(
+            breakdown.total_phase,
+            breakdown.self_phase_a + breakdown.interaction_phase + breakdown.self_phase_b,
+        )
+
+    def test_retarded_phase_breakdown_exposes_directional_asymmetry(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-4.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0)), (4.0, (4.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (1.0, 1.0, 0.0)), (4.0, (2.0, 1.0, 0.0))])
+        breakdown = analyze_branch_pair_phase(moving, static, mass=0.0, propagation="retarded")
+        self.assertNotAlmostEqual(breakdown.directed_cross_phase_ab, breakdown.directed_cross_phase_ba)
+        self.assertAlmostEqual(
+            breakdown.interaction_phase,
+            0.5 * (breakdown.directed_cross_phase_ab + breakdown.directed_cross_phase_ba),
+        )
+
+    def test_phase_decomposition_total_matrix_combines_self_and_cross_terms(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))]),
+            branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))]),
+            branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))]),
+        )
+        decomposition = analyze_phase_decomposition(branches_a, branches_b, mass=0.5)
+        for r in range(len(branches_a)):
+            for s in range(len(branches_b)):
+                self.assertAlmostEqual(
+                    decomposition.total_matrix[r][s],
+                    decomposition.self_phases_a[r]
+                    + decomposition.interaction_matrix[r][s]
+                    + decomposition.self_phases_b[s],
+                )
 
 
 if __name__ == "__main__":

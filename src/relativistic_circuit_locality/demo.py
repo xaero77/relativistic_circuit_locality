@@ -5,6 +5,7 @@ from __future__ import annotations
 from .scalar_field import (
     BranchPath,
     TrajectoryPoint,
+    analyze_branch_pair_phase,
     compute_entanglement_phase,
     simulate,
 )
@@ -41,6 +42,14 @@ def main() -> None:
         "retarded_relative_entangling_phase =",
         round(compute_entanglement_phase(retarded.phase_matrix, 0, 1, 0, 1), 6),
     )
+    pair_breakdown = analyze_branch_pair_phase(
+        branches_a[0],
+        branches_b[0],
+        mass=0.5,
+        propagation="retarded",
+        cutoff=0.1,
+    )
+    print("pair_breakdown_A0_B0 =", pair_breakdown)
 
 
 if __name__ == "__main__":
