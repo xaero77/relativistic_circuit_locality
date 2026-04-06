@@ -1,3 +1,5 @@
+"""Public package exports for the relativistic circuit locality helpers."""
+
 from .scalar_field import (
     BranchPath,
     SimulationResult,

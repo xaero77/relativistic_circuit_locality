@@ -1,3 +1,5 @@
+"""Regression tests for the scalar-field trajectory and phase helpers."""
+
 import unittest
 
 from relativistic_circuit_locality.scalar_field import (
@@ -12,6 +14,7 @@ from relativistic_circuit_locality.scalar_field import (
 
 
 def branch(label: str, charge: float, samples: list[tuple[float, tuple[float, float, float]]]) -> BranchPath:
+    # Tests use a compact helper so the interesting geometry stays readable.
     return BranchPath(
         label=label,
         charge=charge,
@@ -86,6 +89,7 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertNotEqual(compute_entanglement_phase(matrix, 0, 1, 0, 1), 0.0)
 
     def test_phase_matrix_is_stable_under_time_resampling(self) -> None:
+        # Equivalent worldlines with different sample densities should integrate the same phase.
         coarse = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
         fine = branch(
             "A0",

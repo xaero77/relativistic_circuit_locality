@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Utilities for comparing branch trajectories through a scalar-field model."""
+
 from dataclasses import dataclass
 from math import exp, inf, pi, sqrt
 
@@ -40,6 +42,7 @@ class BranchPath:
     points: tuple[TrajectoryPoint, ...]
 
     def __post_init__(self) -> None:
+        # Piecewise-linear interpolation only makes sense on an ordered timeline.
         if len(self.points) < 2:
             raise ValueError("Each branch path needs at least two trajectory points.")
         times = [point.t for point in self.points]
@@ -59,6 +62,7 @@ class BranchPath:
 
         for left, right in zip(self.points, self.points[1:]):
             if left.t <= t <= right.t:
+                # Interpolate within the active segment so mismatched sampling still works.
                 weight = (t - left.t) / (right.t - left.t)
                 return _add(left.position, _scale(_sub(right.position, left.position), weight))
         raise ValueError("Requested time could not be interpolated from trajectory points.")
@@ -81,6 +85,7 @@ def _overlap_window(*branches: BranchPath) -> tuple[float, float]:
 
 def _shared_time_grid(*branches: BranchPath) -> tuple[float, ...]:
     start, stop = _overlap_window(*branches)
+    # Merge all branch sample times so every trajectory segment boundary is respected.
     times = {start, stop}
     for branch in branches:
         for point in branch.points:
@@ -111,6 +116,7 @@ def _segment_minimum_distance(
     if speed_sq <= 1e-18:
         return _norm(relative_start)
 
+    # Minimize the quadratic relative separation inside the segment bounds.
     tau = -_dot(relative_start, relative_velocity) / speed_sq
     tau = min(max(tau, 0.0), duration)
     return _norm(_add(relative_start, _scale(relative_velocity, tau)))
@@ -148,6 +154,7 @@ def field_mediation_intervals(
                 t_start = base_times[index]
                 t_stop = base_times[index + 1]
                 if _segment_minimum_distance(branch_a, branch_b, t_start, t_stop) <= tolerance:
+                    # A contact event inside the segment breaks field-only mediation.
                     segment_is_spacelike = False
                     break
             if not segment_is_spacelike:
@@ -189,6 +196,7 @@ def is_field_mediated(
 
 
 def _yukawa_kernel(distance: float, mass: float, cutoff: float) -> float:
+    # Clamp very short distances to keep the kernel numerically well behaved.
     effective_distance = max(distance, cutoff)
     return exp(-mass * effective_distance) / (4.0 * pi * effective_distance)
 
@@ -203,6 +211,7 @@ def _branch_pair_phase(
     grid = _shared_time_grid(branch_a, branch_b)
     phase = 0.0
     for t_start, t_stop in zip(grid, grid[1:]):
+        # Midpoint quadrature is enough because each segment is already piecewise linear.
         point_a = TrajectoryPoint(
             t=(t_start + t_stop) / 2.0,
             position=branch_a.position_at((t_start + t_stop) / 2.0),
@@ -260,6 +269,7 @@ def simulate(
     closest_approach = inf
     for branch_a in branches_a:
         for branch_b in branches_b:
+            # Report the nearest encounter across every branch pairing in the experiment.
             closest_approach = min(closest_approach, compute_closest_approach(branch_a, branch_b))
 
     return SimulationResult(
