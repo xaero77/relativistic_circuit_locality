@@ -1,4 +1,4 @@
-"""Public package exports for the relativistic circuit locality helpers."""
+"""상대론적 회로 국소성 도우미의 공개 API를 내보낸다."""
 
 from .scalar_field import (
     BranchPath,

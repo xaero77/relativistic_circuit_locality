@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Utilities for comparing branch trajectories through a scalar-field model."""
+"""스칼라장 모형에서 분기 궤적을 비교하는 유틸리티."""
 
 from dataclasses import dataclass
 from math import exp, inf, pi, sqrt
@@ -42,7 +42,7 @@ class BranchPath:
     points: tuple[TrajectoryPoint, ...]
 
     def __post_init__(self) -> None:
-        # Piecewise-linear interpolation only makes sense on an ordered timeline.
+        # 구간별 선형 보간은 시간축이 엄격히 정렬되어 있어야만 의미가 있다.
         if len(self.points) < 2:
             raise ValueError("Each branch path needs at least two trajectory points.")
         times = [point.t for point in self.points]
@@ -62,7 +62,7 @@ class BranchPath:
 
         for left, right in zip(self.points, self.points[1:]):
             if left.t <= t <= right.t:
-                # Interpolate within the active segment so mismatched sampling still works.
+                # 샘플 시각이 달라도 동작하도록 현재 구간 내부에서 보간한다.
                 weight = (t - left.t) / (right.t - left.t)
                 return _add(left.position, _scale(_sub(right.position, left.position), weight))
         raise ValueError("Requested time could not be interpolated from trajectory points.")
@@ -85,7 +85,7 @@ def _overlap_window(*branches: BranchPath) -> tuple[float, float]:
 
 def _shared_time_grid(*branches: BranchPath) -> tuple[float, ...]:
     start, stop = _overlap_window(*branches)
-    # Merge all branch sample times so every trajectory segment boundary is respected.
+    # 모든 분기의 샘플 시각을 합쳐 각 궤적 구간 경계를 빠짐없이 반영한다.
     times = {start, stop}
     for branch in branches:
         for point in branch.points:
@@ -116,7 +116,7 @@ def _segment_minimum_distance(
     if speed_sq <= 1e-18:
         return _norm(relative_start)
 
-    # Minimize the quadratic relative separation inside the segment bounds.
+    # 구간 경계 안에서 상대 거리의 이차식을 최소화한다.
     tau = -_dot(relative_start, relative_velocity) / speed_sq
     tau = min(max(tau, 0.0), duration)
     return _norm(_add(relative_start, _scale(relative_velocity, tau)))
@@ -154,7 +154,7 @@ def field_mediation_intervals(
                 t_start = base_times[index]
                 t_stop = base_times[index + 1]
                 if _segment_minimum_distance(branch_a, branch_b, t_start, t_stop) <= tolerance:
-                    # A contact event inside the segment breaks field-only mediation.
+                    # 구간 내부 접촉이 생기면 장만으로 매개된 상태가 깨진다.
                     segment_is_spacelike = False
                     break
             if not segment_is_spacelike:
@@ -196,7 +196,7 @@ def is_field_mediated(
 
 
 def _yukawa_kernel(distance: float, mass: float, cutoff: float) -> float:
-    # Clamp very short distances to keep the kernel numerically well behaved.
+    # 아주 짧은 거리는 잘라서 커널이 수치적으로 불안정해지지 않게 한다.
     effective_distance = max(distance, cutoff)
     return exp(-mass * effective_distance) / (4.0 * pi * effective_distance)
 
@@ -211,7 +211,7 @@ def _branch_pair_phase(
     grid = _shared_time_grid(branch_a, branch_b)
     phase = 0.0
     for t_start, t_stop in zip(grid, grid[1:]):
-        # Midpoint quadrature is enough because each segment is already piecewise linear.
+        # 각 구간이 이미 선형이므로 중점 적분만으로도 충분하다.
         point_a = TrajectoryPoint(
             t=(t_start + t_stop) / 2.0,
             position=branch_a.position_at((t_start + t_stop) / 2.0),
@@ -269,7 +269,7 @@ def simulate(
     closest_approach = inf
     for branch_a in branches_a:
         for branch_b in branches_b:
-            # Report the nearest encounter across every branch pairing in the experiment.
+            # 실험의 모든 분기 쌍 가운데 가장 가까운 접근 거리를 기록한다.
             closest_approach = min(closest_approach, compute_closest_approach(branch_a, branch_b))
 
     return SimulationResult(

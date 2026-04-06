@@ -1,4 +1,4 @@
-"""Regression tests for the scalar-field trajectory and phase helpers."""
+"""스칼라장 궤적 및 위상 도우미에 대한 회귀 테스트."""
 
 import unittest
 
@@ -14,7 +14,7 @@ from relativistic_circuit_locality.scalar_field import (
 
 
 def branch(label: str, charge: float, samples: list[tuple[float, tuple[float, float, float]]]) -> BranchPath:
-    # Tests use a compact helper so the interesting geometry stays readable.
+    # 테스트에서는 간단한 헬퍼를 써서 핵심 기하 구조가 잘 보이게 한다.
     return BranchPath(
         label=label,
         charge=charge,
@@ -89,7 +89,7 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertNotEqual(compute_entanglement_phase(matrix, 0, 1, 0, 1), 0.0)
 
     def test_phase_matrix_is_stable_under_time_resampling(self) -> None:
-        # Equivalent worldlines with different sample densities should integrate the same phase.
+        # 같은 세계선이라면 샘플 밀도가 달라도 적분 위상은 같아야 한다.
         coarse = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
         fine = branch(
             "A0",
