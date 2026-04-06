@@ -27,6 +27,7 @@
 - 전체 실험 구간이 mediation 조건을 만족하는지 판정하는 `is_field_mediated` 구현
 - 논문 식 (36)을 직접 연속장으로 풀지 않고, 저에너지/준정적 수치 근사로 바꾼 Yukawa kernel 기반 `compute_branch_phase_matrix` 구현
 - 같은 시각 정적 상호작용만 보던 한계를 줄이기 위해 finite propagation speed 를 반영한 `retarded` 위상 적분 모드 추가
+- 구간별 중점 근사 대신 Gauss-Legendre quadrature 를 써서 piecewise linear worldline 위의 연속 시간 위상 적분 정밀도 개선
 - branch matrix 로부터 qudit 얽힘에 대응하는 상대 위상 `compute_entanglement_phase` 구현
 - 결과를 한 번에 묶는 `SimulationResult` 및 `simulate` 구현
 - 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가
@@ -45,7 +46,7 @@
 ## 현재 구현의 한계
 
 - QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
-- 연속 시공간 적분을 직접 수행하지 않고, piecewise linear worldline 위에서 `instantaneous` 또는 single-source `retarded` Yukawa 근사를 사용한다.
+- 전체 4차원 장 방정식을 직접 풀지는 않으며, piecewise linear worldline 위의 연속 시간 적분을 Gauss-Legendre quadrature 로 근사한 `instantaneous`/single-source `retarded` Yukawa 모델을 사용한다.
 - microcausality 자체를 commutator 적분으로 평가하지 않고, spacelike separation criterion 으로 판정한다.
 
 ## 사용 방법

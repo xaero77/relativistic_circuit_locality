@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """스칼라장 모형에서 분기 궤적을 비교하는 유틸리티."""
 
+from functools import lru_cache
 from dataclasses import dataclass
 from math import exp, inf, pi, sqrt
 from typing import Literal
@@ -202,6 +203,29 @@ def _yukawa_kernel(distance: float, mass: float, cutoff: float) -> float:
     return exp(-mass * effective_distance) / (4.0 * pi * effective_distance)
 
 
+@lru_cache(maxsize=None)
+def _gauss_legendre_rule(order: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    rules = {
+        1: ((0.0,), (2.0,)),
+        2: ((-0.5773502691896257, 0.5773502691896257), (1.0, 1.0)),
+        3: (
+            (-0.7745966692414834, 0.0, 0.7745966692414834),
+            (0.5555555555555556, 0.8888888888888888, 0.5555555555555556),
+        ),
+        4: (
+            (-0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526),
+            (0.34785484513745385, 0.6521451548625461, 0.6521451548625461, 0.34785484513745385),
+        ),
+        5: (
+            (-0.906179845938664, -0.5384693101056831, 0.0, 0.5384693101056831, 0.906179845938664),
+            (0.23692688505618908, 0.47862867049936647, 0.5688888888888889, 0.47862867049936647, 0.23692688505618908),
+        ),
+    }
+    if order not in rules:
+        raise ValueError("quadrature_order must be between 1 and 5.")
+    return rules[order]
+
+
 def _retarded_source_time(
     source: BranchPath,
     target: BranchPath,
@@ -238,28 +262,33 @@ def _branch_pair_phase(
     cutoff: float,
     propagation: Literal["instantaneous", "retarded"],
     light_speed: float,
+    quadrature_order: int,
 ) -> float:
     grid = _shared_time_grid(branch_a, branch_b)
+    nodes, weights = _gauss_legendre_rule(quadrature_order)
     phase = 0.0
     for t_start, t_stop in zip(grid, grid[1:]):
-        # 각 구간이 이미 선형이므로 중점 적분만으로도 충분하다.
         midpoint = (t_start + t_stop) / 2.0
-        point_b = TrajectoryPoint(t=midpoint, position=branch_b.position_at(midpoint))
-        if propagation == "instantaneous":
-            point_a = TrajectoryPoint(t=midpoint, position=branch_a.position_at(midpoint))
-        else:
-            retarded_time = _retarded_source_time(
-                branch_a,
-                branch_b,
-                midpoint,
-                light_speed=light_speed,
-            )
-            if retarded_time is None:
-                continue
-            point_a = TrajectoryPoint(t=retarded_time, position=branch_a.position_at(retarded_time))
-        dt = t_stop - t_start
-        distance = _norm(_sub(point_a.position, point_b.position))
-        phase -= branch_a.charge * branch_b.charge * _yukawa_kernel(distance, mass, cutoff) * dt
+        half_width = (t_stop - t_start) / 2.0
+        segment_integral = 0.0
+        for node, weight in zip(nodes, weights):
+            sample_time = midpoint + half_width * node
+            point_b = TrajectoryPoint(t=sample_time, position=branch_b.position_at(sample_time))
+            if propagation == "instantaneous":
+                point_a = TrajectoryPoint(t=sample_time, position=branch_a.position_at(sample_time))
+            else:
+                retarded_time = _retarded_source_time(
+                    branch_a,
+                    branch_b,
+                    sample_time,
+                    light_speed=light_speed,
+                )
+                if retarded_time is None:
+                    continue
+                point_a = TrajectoryPoint(t=retarded_time, position=branch_a.position_at(retarded_time))
+            distance = _norm(_sub(point_a.position, point_b.position))
+            segment_integral += weight * _yukawa_kernel(distance, mass, cutoff)
+        phase -= branch_a.charge * branch_b.charge * segment_integral * half_width
     return phase
 
 
@@ -271,11 +300,14 @@ def compute_branch_phase_matrix(
     cutoff: float = 1e-9,
     propagation: Literal["instantaneous", "retarded"] = "instantaneous",
     light_speed: float = 1.0,
+    quadrature_order: int = 3,
 ) -> tuple[tuple[float, ...], ...]:
     if light_speed <= 0.0:
         raise ValueError("light_speed must be positive.")
     if propagation not in {"instantaneous", "retarded"}:
         raise ValueError("propagation must be either 'instantaneous' or 'retarded'.")
+    if quadrature_order <= 0:
+        raise ValueError("quadrature_order must be positive.")
     return tuple(
         tuple(
             _branch_pair_phase(
@@ -285,6 +317,7 @@ def compute_branch_phase_matrix(
                 cutoff=cutoff,
                 propagation=propagation,
                 light_speed=light_speed,
+                quadrature_order=quadrature_order,
             )
             for branch_b in branches_b
         )
@@ -316,6 +349,7 @@ def simulate(
     light_speed: float = 1.0,
     tolerance: float = 1e-9,
     propagation: Literal["instantaneous", "retarded"] = "instantaneous",
+    quadrature_order: int = 3,
 ) -> SimulationResult:
     closest_approach = inf
     for branch_a in branches_a:
@@ -338,5 +372,6 @@ def simulate(
             cutoff=cutoff,
             propagation=propagation,
             light_speed=light_speed,
+            quadrature_order=quadrature_order,
         ),
     )

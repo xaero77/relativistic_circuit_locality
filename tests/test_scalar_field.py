@@ -1,7 +1,7 @@
 """스칼라장 궤적 및 위상 도우미에 대한 회귀 테스트."""
 
 import unittest
-from math import pi
+from math import asinh, pi
 
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
@@ -128,6 +128,21 @@ class ScalarFieldTests(unittest.TestCase):
             light_speed=0.5,
         )
         self.assertLess(abs(slower[0][0]), abs(faster[0][0]))
+
+    def test_higher_order_quadrature_better_matches_analytic_moving_worldline_integral(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])
+        expected = -asinh(1.0) / (2.0 * pi)
+        midpoint = compute_branch_phase_matrix((moving,), (static,), mass=0.0, quadrature_order=1)
+        higher_order = compute_branch_phase_matrix((moving,), (static,), mass=0.0, quadrature_order=5)
+        self.assertLess(abs(higher_order[0][0] - expected), abs(midpoint[0][0] - expected))
+        self.assertAlmostEqual(higher_order[0][0], expected, places=4)
+
+    def test_quadrature_order_must_be_positive(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0))])
+        with self.assertRaises(ValueError):
+            compute_branch_phase_matrix((source,), (target,), mass=0.0, quadrature_order=0)
 
 
 if __name__ == "__main__":
