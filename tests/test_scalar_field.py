@@ -27,6 +27,7 @@ from relativistic_circuit_locality.scalar_field import (
     compute_displacement_operator_phase,
     compute_entanglement_phase,
     compute_extrapolated_continuum_displacement_amplitudes,
+    compute_certified_spectral_displacement_amplitudes,
     estimate_spectral_continuum_error_bound,
     estimate_spectral_convergence,
     estimate_continuum_displacement_amplitudes,
@@ -46,7 +47,9 @@ from relativistic_circuit_locality.scalar_field import (
     is_field_mediated,
     sample_branch_field,
     sample_mediator_field,
+    solve_fft_lattice_evolution,
     solve_dynamic_boundary_lattice,
+    solve_mediator_self_consistent_backreaction,
     solve_nonlinear_backreaction,
     solve_spectral_lattice,
     solve_self_consistent_backreaction,
@@ -60,6 +63,7 @@ from relativistic_circuit_locality.scalar_field import (
     tomograph_multimode_family,
     summarize_symbolic_multimode_bookkeeping,
     verify_multimode_analytic_identities,
+    compile_multimode_state_transform,
 )
 
 
@@ -434,6 +438,12 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(result.amplitudes), 1)
         self.assertGreaterEqual(len(result.mode_counts), 1)
 
+    def test_certified_spectral_displacement_returns_certificate(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_certified_spectral_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(result.certificate_error, 0.0)
+
     def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
         profile = (1.0 + 2.0j, -0.5j)
         self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
@@ -516,6 +526,16 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.labels, ("r0", "r1"))
         self.assertGreaterEqual(result.phase_antisymmetry_error, 0.0)
         self.assertGreaterEqual(result.norm_consistency_error, 0.0)
+
+    def test_compile_multimode_state_transform_returns_overlap_matrix(self) -> None:
+        result = compile_multimode_state_transform(
+            (
+                ("r0", ((1.0 + 0.0j,), (0.5 + 0.0j,))),
+                ("r1", ((-1.0 + 0.0j,), (-0.5 + 0.0j,))),
+            )
+        )
+        self.assertEqual(result.labels, ("r0", "r1"))
+        self.assertEqual(len(result.overlap_matrix), 2)
 
     def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
         momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
@@ -631,6 +651,19 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.boundary_schedule, ("dirichlet", "periodic"))
         self.assertEqual(len(result.slices), 2)
 
+    def test_solve_fft_lattice_evolution_returns_damping_profile(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_fft_lattice_evolution(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary_schedule=("open", "periodic"),
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(result.slices), 2)
+        self.assertEqual(len(result.damping_profile), 2)
+
     def test_backreacted_branch_shifts_target_positions(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
         target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
@@ -686,6 +719,20 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result.iterations, 1)
         self.assertGreaterEqual(result.residual, 0.0)
+
+    def test_solve_mediator_self_consistent_backreaction_returns_phase_shift(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_mediator_self_consistent_backreaction(
+            source,
+            target,
+            mediator="gravity",
+            max_iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(result.mediator, "gravity")
+        self.assertNotEqual(result.phase_shift, 0.0)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

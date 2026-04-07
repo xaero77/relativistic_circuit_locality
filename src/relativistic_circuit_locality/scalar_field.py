@@ -304,6 +304,34 @@ class SelfConsistentBackreactionResult:
     residual: float
 
 
+@dataclass(frozen=True)
+class FftLatticeEvolutionResult:
+    slices: tuple[SpectralLatticeResult, ...]
+    damping_profile: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class CertifiedSpectralResult:
+    amplitudes: tuple[complex, ...]
+    certificate_error: float
+    converged: bool
+    mode_count: int
+
+
+@dataclass(frozen=True)
+class MultimodeStateTransformResult:
+    labels: tuple[str, ...]
+    overlap_matrix: tuple[tuple[complex, ...], ...]
+    phase_matrix: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class MediatorBackreactionResult:
+    mediator: Literal["scalar", "vector", "gravity"]
+    result: SelfConsistentBackreactionResult
+    phase_shift: float
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -1536,6 +1564,39 @@ def estimate_spectral_convergence(
     )
 
 
+def compute_certified_spectral_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    tolerance: float = 1e-6,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> CertifiedSpectralResult:
+    error_bound = estimate_spectral_continuum_error_bound(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        tolerance=tolerance,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    convergence = estimate_spectral_convergence(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        tolerance=tolerance,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    return CertifiedSpectralResult(
+        amplitudes=error_bound.amplitudes,
+        certificate_error=max(error_bound.absolute_bound, convergence.successive_differences[-1] if convergence.successive_differences else 0.0),
+        converged=convergence.converged or error_bound.absolute_bound <= tolerance,
+        mode_count=max(error_bound.mode_count, convergence.mode_counts[-1]),
+    )
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1744,6 +1805,31 @@ def verify_multimode_analytic_identities(
         labels=bookkeeping.labels,
         phase_antisymmetry_error=antisymmetry_error,
         norm_consistency_error=norm_consistency_error,
+    )
+
+
+def compile_multimode_state_transform(
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+) -> MultimodeStateTransformResult:
+    if not labeled_mode_samples:
+        raise ValueError("labeled_mode_samples must not be empty.")
+    labels = tuple(label for label, _ in labeled_mode_samples)
+    component_states = tuple(
+        tomograph_general_gaussian_state(samples)
+        for _, samples in labeled_mode_samples
+    )
+    overlap_matrix = tuple(
+        tuple(compare_general_gaussian_states(left, right).overlap for right in component_states)
+        for left in component_states
+    )
+    phase_matrix = tuple(
+        tuple(compare_general_gaussian_states(left, right).relative_phase for right in component_states)
+        for left in component_states
+    )
+    return MultimodeStateTransformResult(
+        labels=labels,
+        overlap_matrix=overlap_matrix,
+        phase_matrix=phase_matrix,
     )
 
 
@@ -2278,6 +2364,56 @@ def solve_dynamic_boundary_lattice(
     return DynamicBoundaryLatticeResult(slices=slices, boundary_schedule=boundary_schedule)
 
 
+def solve_fft_lattice_evolution(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...],
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    damping_strength: float = 0.05,
+) -> FftLatticeEvolutionResult:
+    dynamic = solve_dynamic_boundary_lattice(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        boundary_schedule=boundary_schedule,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    damped_slices: list[SpectralLatticeResult] = []
+    damping_profile: list[float] = []
+    for slice_index, spectral in enumerate(dynamic.slices):
+        damping = 1.0 / (1.0 + damping_strength * slice_index)
+        damping_profile.append(damping)
+        damped_samples = tuple(
+            FieldSample(t=sample.t, position=sample.position, value=damping * sample.value)
+            for sample in spectral.lattice.samples
+        )
+        damped_coefficients = tuple(damping * coefficient for coefficient in spectral.spectral_coefficients)
+        damped_slices.append(
+            SpectralLatticeResult(
+                lattice=FieldLattice(
+                    samples=damped_samples,
+                    time_slices=spectral.lattice.time_slices,
+                    spatial_points=spectral.lattice.spatial_points,
+                ),
+                spectral_coefficients=damped_coefficients,
+                boundary_condition=spectral.boundary_condition,
+            )
+        )
+    return FftLatticeEvolutionResult(slices=tuple(damped_slices), damping_profile=tuple(damping_profile))
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -2512,6 +2648,48 @@ def solve_self_consistent_backreaction(
         converged=converged,
         residual=residual,
     )
+
+
+def solve_mediator_self_consistent_backreaction(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    mediator: Literal["scalar", "vector", "gravity"],
+    max_iterations: int,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.25,
+    tolerance: float = 1e-6,
+) -> MediatorBackreactionResult:
+    result = solve_self_consistent_backreaction(
+        source,
+        target,
+        max_iterations=max_iterations,
+        mass=mass,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    phase_shift = compute_mediated_phase_matrix(
+        (result.source,),
+        (result.target,),
+        mass=mass,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )[0][0]
+    return MediatorBackreactionResult(mediator=mediator, result=result, phase_shift=phase_shift)
 
 
 def compute_wavepacket_phase_matrix(
