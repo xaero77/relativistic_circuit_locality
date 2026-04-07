@@ -40,10 +40,26 @@
 - 두 계의 branch 조합 `(r, s)`마다 displacement profile 을 합성하는 `compute_branch_pair_displacements` 구현
 - displacement operator 합성에서 생기는 BCH 위상을 mode profile 로 계산하는 `compute_displacement_operator_phase` 구현
 - branch pair 가 만드는 field coherent state 의 자유 진화와 occupation number 를 추적하는 `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state` 구현
-- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상 출력 지원
+- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded`/`time_symmetric`/`causal_history` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상, displacement/coherent-state 출력 지원
 - `unittest` 기반 회귀 테스트 추가
 - 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
 - Fourier-space displacement/coherent-state 계산에 대한 회귀 테스트 추가
+- `causal_history`가 과거 source support 에 민감하고 past light cone overlap 이 없으면 0 이 되는지에 대한 회귀 테스트 추가
+
+## 현재 공개 API 요약
+
+- 기본 기하/인과성: `BranchPath`, `TrajectoryPoint`, `compute_closest_approach`, `field_mediation_intervals`, `is_field_mediated`
+- 위상 행렬: `compute_branch_phase_matrix`, `compute_entanglement_phase`, `simulate`
+- 위상 분해: `analyze_branch_pair_phase`, `analyze_phase_decomposition`
+- finite-width wavepacket: `compute_wavepacket_phase_matrix`, `analyze_wavepacket_phase_decomposition`
+- Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`
+
+## 전파 모드 요약
+
+- `instantaneous`: 같은 시각의 branch 위치만 써서 Yukawa kernel 을 적분한다.
+- `retarded`: target 시각마다 source 의 단일 retarded point 를 찾아 적분한다.
+- `time_symmetric`: `A -> B`, `B -> A` retarded 기여를 평균해 방향성 비대칭을 줄인다.
+- `causal_history`: past light cone 내부의 source history 전체를 proper-time Yukawa kernel 로 적분한다.
 
 ## 추가해야 할 기능
 
