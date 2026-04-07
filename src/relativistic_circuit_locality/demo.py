@@ -36,11 +36,13 @@ def main() -> None:
     instantaneous = simulate(branches_a, branches_b, mass=0.5)
     retarded = simulate(branches_a, branches_b, mass=0.5, propagation="retarded")
     time_symmetric = simulate(branches_a, branches_b, mass=0.5, propagation="time_symmetric")
+    causal_history = simulate(branches_a, branches_b, mass=0.5, propagation="causal_history")
     print("closest_approach =", round(instantaneous.closest_approach, 6))
     print("mediation_intervals =", instantaneous.mediation_intervals)
     print("instantaneous_phase_matrix =", instantaneous.phase_matrix)
     print("retarded_phase_matrix =", retarded.phase_matrix)
     print("time_symmetric_phase_matrix =", time_symmetric.phase_matrix)
+    print("causal_history_phase_matrix =", causal_history.phase_matrix)
     print(
         "instantaneous_relative_entangling_phase =",
         round(compute_entanglement_phase(instantaneous.phase_matrix, 0, 1, 0, 1), 6),
@@ -52,6 +54,10 @@ def main() -> None:
     print(
         "time_symmetric_relative_entangling_phase =",
         round(compute_entanglement_phase(time_symmetric.phase_matrix, 0, 1, 0, 1), 6),
+    )
+    print(
+        "causal_history_relative_entangling_phase =",
+        round(compute_entanglement_phase(causal_history.phase_matrix, 0, 1, 0, 1), 6),
     )
     momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0), (0.5, 0.5, 0.0))
     displacement_a = compute_branch_displacement_amplitudes(

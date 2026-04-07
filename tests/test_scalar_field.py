@@ -149,6 +149,20 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreaterEqual(symmetric[0][0], low)
         self.assertLessEqual(symmetric[0][0], high)
 
+    def test_causal_history_is_sensitive_to_past_source_support(self) -> None:
+        short_source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        long_source = branch("A0", 1.0, [(-2.0, (0.0, 0.0, 0.0)), (0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.5, (1.0, 0.0, 0.0)), (3.0, (1.0, 0.0, 0.0))])
+        short_history = compute_branch_phase_matrix((short_source,), (target,), mass=0.5, propagation="causal_history")
+        long_history = compute_branch_phase_matrix((long_source,), (target,), mass=0.5, propagation="causal_history")
+        self.assertGreater(abs(long_history[0][0]), abs(short_history[0][0]))
+
+    def test_causal_history_vanishes_without_past_light_cone_overlap(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (0.4, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (0.4, (2.0, 0.0, 0.0))])
+        causal_history = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="causal_history")
+        self.assertAlmostEqual(causal_history[0][0], 0.0)
+
     def test_higher_order_quadrature_better_matches_analytic_moving_worldline_integral(self) -> None:
         moving = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
         static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])

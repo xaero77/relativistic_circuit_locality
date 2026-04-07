@@ -289,11 +289,57 @@ def _retarded_source_time(
     return None
 
 
+def _causal_history_kernel(
+    source: BranchPath,
+    target: BranchPath,
+    target_time: float,
+    *,
+    light_speed: float,
+    quadrature_order: int,
+    kernel: Callable[[float], float],
+    proper_time_cutoff: float,
+) -> float:
+    source_start, source_stop = source.time_window
+    if target_time <= source_start:
+        return 0.0
+
+    integration_stop = min(target_time, source_stop)
+    if integration_stop <= source_start:
+        return 0.0
+
+    grid = [source_start]
+    for point in source.points:
+        if source_start < point.t < integration_stop:
+            grid.append(point.t)
+    grid.append(integration_stop)
+
+    nodes, weights = _gauss_legendre_rule(quadrature_order)
+    target_position = target.position_at(target_time)
+    total = 0.0
+    for t_start, t_stop in zip(grid, grid[1:]):
+        midpoint = (t_start + t_stop) / 2.0
+        half_width = (t_stop - t_start) / 2.0
+        segment = 0.0
+        for node, weight in zip(nodes, weights):
+            source_time = midpoint + half_width * node
+            delta_t = target_time - source_time
+            if delta_t <= 0.0:
+                continue
+            distance = _norm(_sub(target_position, source.position_at(source_time)))
+            invariant_sq = (light_speed * delta_t) ** 2 - distance * distance
+            if invariant_sq <= 0.0:
+                continue
+            proper_interval = sqrt(max(invariant_sq, proper_time_cutoff * proper_time_cutoff))
+            segment += weight * kernel(proper_interval)
+        total += segment * half_width
+    return total
+
+
 def _pair_phase_integral(
     branch_a: BranchPath,
     branch_b: BranchPath,
     *,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"],
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"],
     light_speed: float,
     quadrature_order: int,
     kernel: Callable[[float], float],
@@ -322,6 +368,18 @@ def _pair_phase_integral(
                     continue
                 point_a = TrajectoryPoint(t=retarded_time, position=branch_a.position_at(retarded_time))
                 distance = _norm(_sub(point_a.position, point_b_now.position))
+            elif propagation == "causal_history":
+                field_value = _causal_history_kernel(
+                    branch_a,
+                    branch_b,
+                    sample_time,
+                    light_speed=light_speed,
+                    quadrature_order=quadrature_order,
+                    kernel=kernel,
+                    proper_time_cutoff=1e-9,
+                )
+                segment_integral += weight * field_value
+                continue
             else:
                 distances: list[float] = []
 
@@ -392,7 +450,7 @@ def _branch_pair_phase(
     *,
     mass: float,
     cutoff: float,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"],
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"],
     light_speed: float,
     quadrature_order: int,
 ) -> float:
@@ -469,14 +527,14 @@ def compute_branch_phase_matrix(
     *,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
 ) -> tuple[tuple[float, ...], ...]:
     if light_speed <= 0.0:
         raise ValueError("light_speed must be positive.")
-    if propagation not in {"instantaneous", "retarded", "time_symmetric"}:
-        raise ValueError("propagation must be 'instantaneous', 'retarded', or 'time_symmetric'.")
+    if propagation not in {"instantaneous", "retarded", "time_symmetric", "causal_history"}:
+        raise ValueError("propagation must be 'instantaneous', 'retarded', 'time_symmetric', or 'causal_history'.")
     if quadrature_order <= 0:
         raise ValueError("quadrature_order must be positive.")
     return tuple(
@@ -638,7 +696,7 @@ def analyze_branch_pair_phase(
     *,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
 ) -> PairPhaseBreakdown:
@@ -695,7 +753,7 @@ def analyze_phase_decomposition(
     *,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
 ) -> PhaseDecompositionResult:
@@ -772,7 +830,7 @@ def compute_wavepacket_phase_matrix(
     widths_b: WidthSpec,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
     radial_quadrature_order: int = 5,
@@ -780,8 +838,8 @@ def compute_wavepacket_phase_matrix(
 ) -> tuple[tuple[float, ...], ...]:
     if light_speed <= 0.0:
         raise ValueError("light_speed must be positive.")
-    if propagation not in {"instantaneous", "retarded", "time_symmetric"}:
-        raise ValueError("propagation must be 'instantaneous', 'retarded', or 'time_symmetric'.")
+    if propagation not in {"instantaneous", "retarded", "time_symmetric", "causal_history"}:
+        raise ValueError("propagation must be 'instantaneous', 'retarded', 'time_symmetric', or 'causal_history'.")
     widths_a_resolved = _resolve_widths(widths_a, len(branches_a))
     widths_b_resolved = _resolve_widths(widths_b, len(branches_b))
     return tuple(
@@ -815,7 +873,7 @@ def analyze_wavepacket_phase_decomposition(
     widths_b: WidthSpec,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
     radial_quadrature_order: int = 5,
@@ -931,7 +989,7 @@ def simulate(
     cutoff: float = 1e-9,
     light_speed: float = 1.0,
     tolerance: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
     quadrature_order: int = 3,
 ) -> SimulationResult:
     closest_approach = inf
