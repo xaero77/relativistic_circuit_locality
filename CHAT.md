@@ -27,6 +27,7 @@
 - 전체 실험 구간이 mediation 조건을 만족하는지 판정하는 `is_field_mediated` 구현
 - 논문 식 (36)을 직접 연속장으로 풀지 않고, 저에너지/준정적 수치 근사로 바꾼 Yukawa kernel 기반 `compute_branch_phase_matrix` 구현
 - 같은 시각 정적 상호작용만 보던 한계를 줄이기 위해 finite propagation speed 를 반영한 `retarded` 위상 적분 모드 추가
+- 한 방향 `retarded` 근사의 비대칭을 줄이기 위해 `A -> B`, `B -> A` light-cone contribution 을 평균하는 `time_symmetric` 전파 모드 추가
 - 구간별 중점 근사 대신 `quadrature_order`로 조절 가능한 Gauss-Legendre quadrature 를 써서 piecewise linear worldline 위의 연속 시간 위상 적분 정밀도 개선
 - branch matrix 로부터 qudit 얽힘에 대응하는 상대 위상 `compute_entanglement_phase` 구현
 - branch pair 별 self-energy, 방향성 있는 cross-term, 대칭 interaction, total phase 를 분리해 주는 `analyze_branch_pair_phase` 구현
@@ -52,7 +53,7 @@
 
 ## 현재 구현의 한계
 
-- 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded` 전파 모드 추가로 일부 개선했다. 다만 아직도 single-source retarded Yukawa 근사에 머문다.
+- 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded`와 `time_symmetric` 전파 모드로 개선했다. 현재 제안 모델은 양방향 light-cone 평균까지 반영하지만, 여전히 massive Klein-Gordon retarded Green function 자체를 직접 적분하는 완전한 `phi_rs` 계산기는 아니다.
 - 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature 로 개선했다. 다만 전체 4차원 장 방정식을 직접 푸는 적분기는 아니다.
 - self-energy 와 cross-term 분해는 추가했지만, 논문 식 (36)의 연속장 분해를 직접 푼 것이 아니라 현재 Yukawa 기반 수치 모델 위에서 해석한 것이다.
 - finite-width wavepacket 은 isotropic Gaussian profile 로 모델링했고, 3차원 상대 반경 분포에 대한 수치 적분으로 처리한다. 아직 일반적인 비등방/비가우시안 packet 은 지원하지 않는다.

@@ -35,10 +35,12 @@ def main() -> None:
     branches_b = (_branch("B0", 1.0, 1.0), _branch("B1", 1.0, 2.0))
     instantaneous = simulate(branches_a, branches_b, mass=0.5)
     retarded = simulate(branches_a, branches_b, mass=0.5, propagation="retarded")
+    time_symmetric = simulate(branches_a, branches_b, mass=0.5, propagation="time_symmetric")
     print("closest_approach =", round(instantaneous.closest_approach, 6))
     print("mediation_intervals =", instantaneous.mediation_intervals)
     print("instantaneous_phase_matrix =", instantaneous.phase_matrix)
     print("retarded_phase_matrix =", retarded.phase_matrix)
+    print("time_symmetric_phase_matrix =", time_symmetric.phase_matrix)
     print(
         "instantaneous_relative_entangling_phase =",
         round(compute_entanglement_phase(instantaneous.phase_matrix, 0, 1, 0, 1), 6),
@@ -46,6 +48,10 @@ def main() -> None:
     print(
         "retarded_relative_entangling_phase =",
         round(compute_entanglement_phase(retarded.phase_matrix, 0, 1, 0, 1), 6),
+    )
+    print(
+        "time_symmetric_relative_entangling_phase =",
+        round(compute_entanglement_phase(time_symmetric.phase_matrix, 0, 1, 0, 1), 6),
     )
     momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0), (0.5, 0.5, 0.0))
     displacement_a = compute_branch_displacement_amplitudes(
@@ -90,7 +96,7 @@ def main() -> None:
         branches_a[0],
         branches_b[0],
         mass=0.5,
-        propagation="retarded",
+        propagation="time_symmetric",
         cutoff=0.1,
     )
     print("pair_breakdown_A0_B0 =", pair_breakdown)

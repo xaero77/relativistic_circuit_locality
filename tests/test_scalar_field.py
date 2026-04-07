@@ -138,6 +138,17 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertLess(abs(slower[0][0]), abs(faster[0][0]))
 
+    def test_time_symmetric_phase_sits_between_directional_retarded_orders(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-4.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0)), (4.0, (4.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (1.0, 1.0, 0.0)), (4.0, (2.0, 1.0, 0.0))])
+        forward = compute_branch_phase_matrix((moving,), (static,), mass=0.0, propagation="retarded")
+        backward = compute_branch_phase_matrix((static,), (moving,), mass=0.0, propagation="retarded")
+        symmetric = compute_branch_phase_matrix((moving,), (static,), mass=0.0, propagation="time_symmetric")
+        low = min(forward[0][0], backward[0][0])
+        high = max(forward[0][0], backward[0][0])
+        self.assertGreaterEqual(symmetric[0][0], low)
+        self.assertLessEqual(symmetric[0][0], high)
+
     def test_higher_order_quadrature_better_matches_analytic_moving_worldline_integral(self) -> None:
         moving = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
         static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])
@@ -175,6 +186,13 @@ class ScalarFieldTests(unittest.TestCase):
             breakdown.interaction_phase,
             0.5 * (breakdown.directed_cross_phase_ab + breakdown.directed_cross_phase_ba),
         )
+
+    def test_time_symmetric_breakdown_removes_directional_asymmetry(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-4.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0)), (4.0, (4.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (1.0, 1.0, 0.0)), (4.0, (2.0, 1.0, 0.0))])
+        breakdown = analyze_branch_pair_phase(moving, static, mass=0.0, propagation="time_symmetric")
+        self.assertAlmostEqual(breakdown.directed_cross_phase_ab, breakdown.directed_cross_phase_ba)
+        self.assertAlmostEqual(breakdown.interaction_phase, breakdown.directed_cross_phase_ab)
 
     def test_phase_decomposition_total_matrix_combines_self_and_cross_terms(self) -> None:
         branches_a = (

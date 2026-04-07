@@ -12,6 +12,7 @@
 - field mediation circuit 성립 여부를 위한 spacelike separation 판정
 - 논문의 `d_min > 0` 조건에 대응하는 최소 접근 거리 계산
 - on-shell scalar-field phase `theta_rs = -1/2 ∫ rho_rs phi_rs`의 준정적 Yukawa 근사
+- 한 방향 retarded 근사와 이를 대칭화한 time-symmetric light-cone 평균 모드
 - branch 조합 사이의 상대 얽힘 위상 계산
 - 유한 개 momentum mode 에 대한 Fourier-space displacement amplitude 와 coherent-state 자유 진화 추적
 
