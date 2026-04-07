@@ -361,6 +361,35 @@ class EffectiveFieldEquationResult:
     backreaction: MediatorBackreactionResult
 
 
+@dataclass(frozen=True)
+class LargeScalePdeResult:
+    surrogate: SurrogatePdeResult
+    multiscale: MultiscaleFieldEvolutionResult
+    spectral: SpectralLatticeResult
+    total_grid_points: int
+
+
+@dataclass(frozen=True)
+class ProvableSpectralControlResult:
+    high_order: HighOrderSpectralResult
+    strict_certificate_error: float
+    guaranteed: bool
+
+
+@dataclass(frozen=True)
+class AppendixDBookkeepingResult:
+    comprehensive: ComprehensiveBookkeepingResult
+    multimode: MultimodeTomographyResult
+    state_transform: MultimodeStateTransformResult
+
+
+@dataclass(frozen=True)
+class GaugeGravityFieldResult:
+    scalar_result: EffectiveFieldEquationResult
+    vector_result: EffectiveFieldEquationResult
+    gravity_result: EffectiveFieldEquationResult
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -1667,6 +1696,36 @@ def compute_high_order_spectral_displacement_amplitudes(
     )
 
 
+def compute_provable_spectral_control(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    tolerance: float = 1e-6,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> ProvableSpectralControlResult:
+    high_order = compute_high_order_spectral_displacement_amplitudes(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        tolerance=tolerance,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    strict_certificate_error = max(
+        high_order.certified.certificate_error,
+        high_order.extrapolated.level_errors[-1] if high_order.extrapolated.level_errors else 0.0,
+        high_order.convergence.successive_differences[-1] if high_order.convergence.successive_differences else 0.0,
+    )
+    guaranteed = strict_certificate_error <= tolerance
+    return ProvableSpectralControlResult(
+        high_order=high_order,
+        strict_certificate_error=strict_certificate_error,
+        guaranteed=guaranteed,
+    )
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1910,6 +1969,19 @@ def compile_comprehensive_multimode_bookkeeping(
         transform=compile_multimode_state_transform(labeled_mode_samples),
         identities=verify_multimode_analytic_identities(labeled_mode_samples),
         bookkeeping=summarize_symbolic_multimode_bookkeeping(labeled_mode_samples),
+    )
+
+
+def compile_appendix_d_bookkeeping(
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+) -> AppendixDBookkeepingResult:
+    multimode = tomograph_multimode_family(tuple(samples for _, samples in labeled_mode_samples))
+    state_transform = compile_multimode_state_transform(labeled_mode_samples)
+    comprehensive = compile_comprehensive_multimode_bookkeeping(labeled_mode_samples)
+    return AppendixDBookkeepingResult(
+        comprehensive=comprehensive,
+        multimode=multimode,
+        state_transform=state_transform,
     )
 
 
@@ -2540,6 +2612,66 @@ def solve_surrogate_4d_field_equation(
     )
 
 
+def solve_large_scale_pde_surrogate(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...],
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    damping_strength: float = 0.05,
+) -> LargeScalePdeResult:
+    surrogate = solve_surrogate_4d_field_equation(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        boundary_schedule=boundary_schedule,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        damping_strength=damping_strength,
+    )
+    multiscale = solve_multiscale_field_lattice(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        refinement_levels=3,
+    )
+    spectral = solve_spectral_lattice(
+        source,
+        time_slices=(time_slices[0],),
+        spatial_points=spatial_points,
+        mass=mass,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        boundary_condition=boundary_schedule[0],
+    )
+    total_grid_points = sum(len(level.lattices[0].samples) for level in multiscale.levels if level.lattices)
+    return LargeScalePdeResult(
+        surrogate=surrogate,
+        multiscale=multiscale,
+        spectral=spectral,
+        total_grid_points=total_grid_points,
+    )
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -2863,6 +2995,81 @@ def solve_effective_field_equation_backreaction(
         tolerance=tolerance,
     )
     return EffectiveFieldEquationResult(mediator=mediator, lattice=lattice, backreaction=backreaction)
+
+
+def solve_gauge_gravity_field_system(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...],
+    max_iterations: int,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.25,
+    tolerance: float = 1e-6,
+) -> GaugeGravityFieldResult:
+    scalar_result = solve_effective_field_equation_backreaction(
+        source,
+        target,
+        mediator="scalar",
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        max_iterations=max_iterations,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    vector_result = solve_effective_field_equation_backreaction(
+        source,
+        target,
+        mediator="vector",
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        max_iterations=max_iterations,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    gravity_result = solve_effective_field_equation_backreaction(
+        source,
+        target,
+        mediator="gravity",
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        max_iterations=max_iterations,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    return GaugeGravityFieldResult(
+        scalar_result=scalar_result,
+        vector_result=vector_result,
+        gravity_result=gravity_result,
+    )
 
 
 def compute_wavepacket_phase_matrix(
