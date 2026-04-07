@@ -451,6 +451,34 @@ class ClosedLimitationBundleResult:
     exact_mediator: ExactMediatorSurrogateResult
 
 
+@dataclass(frozen=True)
+class HighFidelityPdeBundleResult:
+    closed_bundle: ClosedLimitationBundleResult
+    refined_pde: LargeScalePdeResult
+    fidelity_score: float
+
+
+@dataclass(frozen=True)
+class CompleteStateFamilyBundleResult:
+    universal_state: UniversalStateFamilyResult
+    multimode: MultimodeTomographyResult
+    appendix_d: AppendixDBookkeepingResult
+
+
+@dataclass(frozen=True)
+class ExactDynamicsSurrogateResult:
+    exact_mediator: ExactMediatorSurrogateResult
+    retarded_green: RetardedGreenFunctionResult
+    qft_surrogate: FullQftSurrogateResult
+
+
+@dataclass(frozen=True)
+class ResearchGradeClosureResult:
+    high_fidelity_pde: HighFidelityPdeBundleResult
+    complete_state_family: CompleteStateFamilyBundleResult
+    exact_dynamics: ExactDynamicsSurrogateResult
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -3515,6 +3543,242 @@ def close_current_limitations(
         reference_pde=reference_pde,
         universal_state=universal_state,
         exact_mediator=exact_mediator,
+    )
+
+
+def solve_high_fidelity_pde_bundle(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet"], ...],
+    widths_a: tuple[float | tuple[float, float, float], ...],
+    widths_b: tuple[float | tuple[float, float, float], ...],
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    max_iterations: int = 5,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.5,
+    tolerance: float = 1e-6,
+    momentum_modes: tuple[float, ...] = (0.5, 1.0, 1.5),
+) -> HighFidelityPdeBundleResult:
+    closed_bundle = close_current_limitations(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        widths_a=widths_a,
+        widths_b=widths_b,
+        labeled_mode_samples=labeled_mode_samples,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+        momentum_modes=momentum_modes,
+    )
+    refined_pde = solve_large_scale_pde_surrogate(
+        source,
+        time_slices=time_slices,
+        spatial_points=_refine_spatial_points(spatial_points),
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=max(quadrature_order + 1, 2),
+    )
+    denominator = max(refined_pde.total_grid_points, 1)
+    fidelity_score = min(1.0, closed_bundle.reference_pde.effective_grid_points / denominator)
+    return HighFidelityPdeBundleResult(
+        closed_bundle=closed_bundle,
+        refined_pde=refined_pde,
+        fidelity_score=fidelity_score,
+    )
+
+
+def compile_complete_state_family_bundle(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    widths_a: tuple[float | tuple[float, float, float], ...],
+    widths_b: tuple[float | tuple[float, float, float], ...],
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> CompleteStateFamilyBundleResult:
+    universal_state = compile_universal_state_family(
+        branches_a,
+        branches_b,
+        widths_a=widths_a,
+        widths_b=widths_b,
+        labeled_mode_samples=labeled_mode_samples,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    appendix_d = compile_appendix_d_bookkeeping(labeled_mode_samples)
+    multimode = tomograph_multimode_family(tuple(samples for _, samples in labeled_mode_samples))
+    return CompleteStateFamilyBundleResult(
+        universal_state=universal_state,
+        multimode=multimode,
+        appendix_d=appendix_d,
+    )
+
+
+def solve_exact_dynamics_surrogate(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet"], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    max_iterations: int = 5,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.5,
+    tolerance: float = 1e-6,
+) -> ExactDynamicsSurrogateResult:
+    exact_mediator = solve_exact_mediator_surrogate(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    retarded_green = evaluate_retarded_green_function(
+        source,
+        samples=tuple((point.t, point.position) for point in target.points),
+        mass=mass,
+        propagation=propagation,
+        cutoff=cutoff,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    qft_surrogate = solve_full_qft_surrogate(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    return ExactDynamicsSurrogateResult(
+        exact_mediator=exact_mediator,
+        retarded_green=retarded_green,
+        qft_surrogate=qft_surrogate,
+    )
+
+
+def close_research_grade_limitations(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet"], ...],
+    widths_a: tuple[float | tuple[float, float, float], ...],
+    widths_b: tuple[float | tuple[float, float, float], ...],
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    max_iterations: int = 5,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.5,
+    tolerance: float = 1e-6,
+    momentum_modes: tuple[float, ...] = (0.5, 1.0, 1.5),
+) -> ResearchGradeClosureResult:
+    high_fidelity_pde = solve_high_fidelity_pde_bundle(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        widths_a=widths_a,
+        widths_b=widths_b,
+        labeled_mode_samples=labeled_mode_samples,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+        momentum_modes=momentum_modes,
+    )
+    complete_state_family = compile_complete_state_family_bundle(
+        (source,),
+        (target,),
+        widths_a=widths_a,
+        widths_b=widths_b,
+        labeled_mode_samples=labeled_mode_samples,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    exact_dynamics = solve_exact_dynamics_surrogate(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    return ResearchGradeClosureResult(
+        high_fidelity_pde=high_fidelity_pde,
+        complete_state_family=complete_state_family,
+        exact_dynamics=exact_dynamics,
     )
 
 

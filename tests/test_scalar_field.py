@@ -78,9 +78,13 @@ from relativistic_circuit_locality.scalar_field import (
     compute_generalized_wavepacket_phase_matrix,
     evaluate_microcausality_commutator,
     solve_reference_pde_control,
+    solve_high_fidelity_pde_bundle,
     compile_universal_state_family,
+    compile_complete_state_family_bundle,
     solve_exact_mediator_surrogate,
+    solve_exact_dynamics_surrogate,
     close_current_limitations,
+    close_research_grade_limitations,
 )
 
 
@@ -960,6 +964,72 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreaterEqual(result.reference_pde.effective_grid_points, 1)
         self.assertEqual(len(result.universal_state.overlap_phase_matrix), 2)
         self.assertTrue(result.exact_mediator.consistent)
+
+    def test_solve_high_fidelity_pde_bundle_returns_score(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_high_fidelity_pde_bundle(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)), ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),))),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertGreaterEqual(result.refined_pde.total_grid_points, 1)
+        self.assertGreaterEqual(result.fidelity_score, 0.0)
+
+    def test_compile_complete_state_family_bundle_returns_multimode(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = compile_complete_state_family_bundle(
+            (source,),
+            (target,),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)), ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),))),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertEqual(len(result.multimode.relative_phase_matrix), 2)
+
+    def test_solve_exact_dynamics_surrogate_returns_retarded_samples(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_exact_dynamics_surrogate(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertGreaterEqual(len(result.retarded_green.samples), 1)
+        self.assertTrue(result.exact_mediator.consistent)
+
+    def test_close_research_grade_limitations_returns_all_layers(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = close_research_grade_limitations(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)), ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),))),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertGreaterEqual(result.high_fidelity_pde.refined_pde.total_grid_points, 1)
+        self.assertEqual(len(result.complete_state_family.multimode.relative_phase_matrix), 2)
+        self.assertGreaterEqual(len(result.exact_dynamics.retarded_green.samples), 1)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
