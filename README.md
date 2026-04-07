@@ -18,6 +18,7 @@
 - branch 조합 사이의 상대 얽힘 위상 계산
 - self-energy, directed cross-term, symmetric interaction, total phase 분해
 - isotropic Gaussian finite-width wavepacket 위상 계산
+- spacetime sample point 에서 field 를 직접 평가하는 `sample_branch_field`와 `compute_sampled_spacetime_phase`
 - 유한 개 momentum mode 에 대한 Fourier-space displacement amplitude 와 coherent-state 자유 진화 추적
 
 현재 코드는 논문의 parametric approximation 안에서 동작한다. 즉, 완전한 QFT 동역학을 직접 적분하지 않고, 시간 이산화된 궤적과 준정적 상호작용 커널을 이용해 논문의 구조를 계산 가능한 형태로 단순화했다.
@@ -30,6 +31,7 @@
 - 위상 계산: `compute_branch_phase_matrix`, `compute_entanglement_phase`, `simulate`
 - 위상 분해: `analyze_branch_pair_phase`, `analyze_phase_decomposition`
 - wavepacket: `compute_wavepacket_phase_matrix`, `analyze_wavepacket_phase_decomposition`
+- direct field sampling: `FieldSample`, `sample_branch_field`, `compute_sampled_spacetime_phase`
 - Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`
 
 ## 전파 모드
@@ -39,6 +41,8 @@
 - `time_symmetric`: 양방향 retarded 평균
 - `causal_history`: past light cone 내부 source history 적분
 - `kg_retarded`: retarded shell 과 timelike tail 을 함께 적분하는 massive Klein-Gordon 근사
+
+최근에는 worldline pair phase 만 적분하던 수준을 넘어서, target worldline 주변의 finite-width density 위에서 `phi_rs`를 직접 샘플링하는 spacetime field-sampling 계층도 추가했다. 이것으로 `-1/2 ∫ d^4x rho phi`를 더 직접적으로 근사할 수 있다.
 
 ## 파일 구성
 

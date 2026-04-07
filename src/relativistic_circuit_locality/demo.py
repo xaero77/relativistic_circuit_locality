@@ -11,7 +11,9 @@ from .scalar_field import (
     compute_branch_pair_displacements,
     compute_displacement_operator_phase,
     compute_wavepacket_phase_matrix,
+    compute_sampled_spacetime_phase,
     compute_entanglement_phase,
+    sample_branch_field,
     simulate,
 )
 
@@ -65,6 +67,21 @@ def main() -> None:
         "kg_retarded_relative_entangling_phase =",
         round(compute_entanglement_phase(kg_retarded.phase_matrix, 0, 1, 0, 1), 6),
     )
+    sampled_field = sample_branch_field(
+        branches_a[0],
+        ((1.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))),
+        mass=0.5,
+        propagation="kg_retarded",
+    )
+    print("sampled_field_A0 =", sampled_field)
+    sampled_phase = compute_sampled_spacetime_phase(
+        branches_a[0],
+        branches_b[0],
+        mass=0.5,
+        target_width=0.3,
+        propagation="kg_retarded",
+    )
+    print("sampled_spacetime_phase_A0_B0 =", sampled_phase)
     momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0), (0.5, 0.5, 0.0))
     displacement_a = compute_branch_displacement_amplitudes(
         branches_a,

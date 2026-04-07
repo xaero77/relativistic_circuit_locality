@@ -16,10 +16,12 @@ from relativistic_circuit_locality.scalar_field import (
     compute_closest_approach,
     compute_displacement_operator_phase,
     compute_entanglement_phase,
+    compute_sampled_spacetime_phase,
     compute_wavepacket_phase_matrix,
     evolve_coherent_state,
     field_mediation_intervals,
     is_field_mediated,
+    sample_branch_field,
 )
 
 
@@ -177,6 +179,31 @@ class ScalarFieldTests(unittest.TestCase):
         short_history = compute_branch_phase_matrix((short_source,), (target,), mass=0.5, propagation="kg_retarded")
         long_history = compute_branch_phase_matrix((long_source,), (target,), mass=0.5, propagation="kg_retarded")
         self.assertGreater(abs(long_history[0][0]), abs(short_history[0][0]))
+
+    def test_sample_branch_field_returns_requested_samples(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        samples = sample_branch_field(
+            source,
+            ((0.5, (1.0, 0.0, 0.0)), (1.5, (1.0, 0.0, 0.0))),
+            mass=0.0,
+            propagation="retarded",
+        )
+        self.assertEqual(len(samples), 2)
+        self.assertGreater(samples[1].value, 0.0)
+
+    def test_sampled_spacetime_phase_matches_pointlike_limit_at_zero_width(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        pointlike = compute_branch_phase_matrix((left,), (right,), mass=0.5, propagation="kg_retarded")
+        sampled = compute_sampled_spacetime_phase(left, right, mass=0.5, target_width=0.0, propagation="kg_retarded")
+        self.assertAlmostEqual(sampled, pointlike[0][0])
+
+    def test_sampled_spacetime_phase_changes_with_target_width(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        pointlike = compute_sampled_spacetime_phase(left, right, mass=0.5, target_width=0.0, propagation="kg_retarded")
+        finite_width = compute_sampled_spacetime_phase(left, right, mass=0.5, target_width=0.4, propagation="kg_retarded")
+        self.assertNotAlmostEqual(pointlike, finite_width)
 
     def test_higher_order_quadrature_better_matches_analytic_moving_worldline_integral(self) -> None:
         moving = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])

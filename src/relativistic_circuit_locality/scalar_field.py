@@ -32,6 +32,16 @@ def _norm(v: Vector3) -> float:
     return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
 
 
+_AXIS_DIRECTIONS: tuple[Vector3, ...] = (
+    (1.0, 0.0, 0.0),
+    (-1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, -1.0, 0.0),
+    (0.0, 0.0, 1.0),
+    (0.0, 0.0, -1.0),
+)
+
+
 @dataclass(frozen=True)
 class TrajectoryPoint:
     t: float
@@ -103,6 +113,13 @@ class CoherentStateEvolution:
     mode_amplitudes: tuple[complex, ...]
     occupation_number: float
     displacement_norm: float
+
+
+@dataclass(frozen=True)
+class FieldSample:
+    t: float
+    position: Vector3
+    value: float
 
 
 WidthSpec = float | tuple[float, ...]
@@ -390,6 +407,67 @@ def _kg_retarded_field(
     return field_value
 
 
+def _field_value_at_observation_point(
+    source: BranchPath,
+    observation_time: float,
+    observation_position: Vector3,
+    *,
+    mass: float,
+    cutoff: float,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
+    light_speed: float,
+    quadrature_order: int,
+) -> float:
+    target = BranchPath(
+        label="_observation",
+        charge=0.0,
+        points=(
+            TrajectoryPoint(observation_time, observation_position),
+            TrajectoryPoint(observation_time + 1e-12, observation_position),
+        ),
+    )
+    if propagation == "instantaneous":
+        distance = _norm(_sub(observation_position, source.position_at(observation_time)))
+        return _yukawa_kernel(distance, mass, cutoff)
+    if propagation == "retarded":
+        retarded_time = _retarded_source_time(source, target, observation_time, light_speed=light_speed)
+        if retarded_time is None:
+            return 0.0
+        distance = _norm(_sub(observation_position, source.position_at(retarded_time)))
+        return _yukawa_kernel(distance, mass, cutoff)
+    if propagation == "time_symmetric":
+        return _field_value_at_observation_point(
+            source,
+            observation_time,
+            observation_position,
+            mass=mass,
+            cutoff=cutoff,
+            propagation="retarded",
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+    if propagation == "causal_history":
+        return _causal_history_kernel(
+            source,
+            target,
+            observation_time,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            kernel=lambda proper_time: _yukawa_kernel(proper_time, mass, cutoff),
+            proper_time_cutoff=cutoff,
+        )
+    return _kg_retarded_field(
+        source,
+        target,
+        observation_time,
+        mass=mass,
+        cutoff=cutoff,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        proper_time_cutoff=cutoff,
+    )
+
+
 def _pair_phase_integral(
     branch_a: BranchPath,
     branch_b: BranchPath,
@@ -593,6 +671,45 @@ def _smeared_yukawa_kernel(
     return total
 
 
+def _gaussian_shell_average(
+    source: BranchPath,
+    sample_time: float,
+    center: Vector3,
+    *,
+    mass: float,
+    cutoff: float,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
+    light_speed: float,
+    quadrature_order: int,
+    shell_radius: float,
+) -> float:
+    if shell_radius <= 0.0:
+        return _field_value_at_observation_point(
+            source,
+            sample_time,
+            center,
+            mass=mass,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+    total = 0.0
+    for direction in _AXIS_DIRECTIONS:
+        point = _add(center, _scale(direction, shell_radius))
+        total += _field_value_at_observation_point(
+            source,
+            sample_time,
+            point,
+            mass=mass,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+    return total / len(_AXIS_DIRECTIONS)
+
+
 def compute_branch_phase_matrix(
     branches_a: tuple[BranchPath, ...],
     branches_b: tuple[BranchPath, ...],
@@ -626,6 +743,102 @@ def compute_branch_phase_matrix(
         )
         for branch_a in branches_a
     )
+
+
+def sample_branch_field(
+    source: BranchPath,
+    samples: tuple[tuple[float, Vector3], ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> tuple[FieldSample, ...]:
+    return tuple(
+        FieldSample(
+            t=sample_time,
+            position=position,
+            value=_field_value_at_observation_point(
+                source,
+                sample_time,
+                position,
+                mass=mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            ),
+        )
+        for sample_time, position in samples
+    )
+
+
+def compute_sampled_spacetime_phase(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    mass: float,
+    target_width: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    radial_quadrature_order: int = 5,
+    radial_subdivisions: int = 24,
+) -> float:
+    if target_width < 0.0:
+        raise ValueError("target_width must be non-negative.")
+    if radial_subdivisions <= 0:
+        raise ValueError("radial_subdivisions must be positive.")
+    if target_width <= 0.0:
+        return _branch_pair_phase(
+            source,
+            target,
+            mass=mass,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+    grid = _shared_time_grid(source, target)
+    time_nodes, time_weights = _gauss_legendre_rule(quadrature_order)
+    radial_nodes, radial_weights = _gauss_legendre_rule(radial_quadrature_order)
+    upper = max(cutoff + 8.0 * target_width, 8.0 * target_width)
+    phase = 0.0
+    for t_start, t_stop in zip(grid, grid[1:]):
+        time_midpoint = (t_start + t_stop) / 2.0
+        time_half_width = (t_stop - t_start) / 2.0
+        time_segment = 0.0
+        for time_node, time_weight in zip(time_nodes, time_weights):
+            sample_time = time_midpoint + time_half_width * time_node
+            center = target.position_at(sample_time)
+            radial_total = 0.0
+            for step in range(radial_subdivisions):
+                left = upper * step / radial_subdivisions
+                right = upper * (step + 1) / radial_subdivisions
+                radial_midpoint = (left + right) / 2.0
+                radial_half_width = (right - left) / 2.0
+                radial_segment = 0.0
+                for radial_node, radial_weight in zip(radial_nodes, radial_weights):
+                    radius = radial_midpoint + radial_half_width * radial_node
+                    density = _gaussian_relative_radius_density(radius, 0.0, max(target_width, cutoff))
+                    shell_average = _gaussian_shell_average(
+                        source,
+                        sample_time,
+                        center,
+                        mass=mass,
+                        cutoff=cutoff,
+                        propagation=propagation,
+                        light_speed=light_speed,
+                        quadrature_order=quadrature_order,
+                        shell_radius=radius,
+                    )
+                    radial_segment += radial_weight * density * shell_average
+                radial_total += radial_segment * radial_half_width
+            time_segment += time_weight * radial_total
+        phase -= source.charge * target.charge * time_segment * time_half_width
+    return phase
 
 
 def compute_branch_displacement_amplitudes(

@@ -31,6 +31,7 @@
 - 단일 retarded point 대신 과거 light cone 전체를 적분하는 `causal_history` 전파 모드 추가
 - massive Klein-Gordon retarded Green function 의 light-cone shell 과 timelike tail 구조를 반영하는 `kg_retarded` 전파 모드 추가
 - 구간별 중점 근사 대신 `quadrature_order`로 조절 가능한 Gauss-Legendre quadrature 를 써서 piecewise linear worldline 위의 연속 시간 위상 적분 정밀도 개선
+- worldline pair 적분만 하지 않고 spacetime sample point 에서 `phi_rs`를 직접 평가하는 `sample_branch_field` 및 `compute_sampled_spacetime_phase` 추가
 - branch matrix 로부터 qudit 얽힘에 대응하는 상대 위상 `compute_entanglement_phase` 구현
 - branch pair 별 self-energy, 방향성 있는 cross-term, 대칭 interaction, total phase 를 분리해 주는 `analyze_branch_pair_phase` 구현
 - branch 집합 전체에 대해 self phase 벡터, directed cross matrix, symmetric interaction matrix, total matrix 를 한 번에 계산하는 `analyze_phase_decomposition` 구현
@@ -47,6 +48,7 @@
 - Fourier-space displacement/coherent-state 계산에 대한 회귀 테스트 추가
 - `causal_history`가 과거 source support 에 민감하고 past light cone overlap 이 없으면 0 이 되는지에 대한 회귀 테스트 추가
 - `kg_retarded`가 massless limit 에서 `retarded`와 일치하고, massive field 에서 tail history 에 민감한지에 대한 회귀 테스트 추가
+- 4차원 field-sampling 적분이 pointlike limit 과 finite-width 보정에 반응하는지에 대한 회귀 테스트 추가
 
 ## 현재 공개 API 요약
 
@@ -55,6 +57,7 @@
 - 위상 분해: `analyze_branch_pair_phase`, `analyze_phase_decomposition`
 - finite-width wavepacket: `compute_wavepacket_phase_matrix`, `analyze_wavepacket_phase_decomposition`
 - Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`
+- 직접 field sampling: `FieldSample`, `sample_branch_field`, `compute_sampled_spacetime_phase`
 
 ## 전파 모드 요약
 
@@ -74,7 +77,7 @@
 ## 현재 구현의 한계
 
 - 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded`, `time_symmetric`, `causal_history`, `kg_retarded` 전파 모드로 개선했다. 특히 `kg_retarded`는 massive Klein-Gordon retarded Green function 의 shell/tail 구조를 반영해 `phi_rs`를 더 직접적으로 근사한다. 다만 아직도 연속 4차원 source density 에 대한 완전한 retarded Green function 적분기라기보다, piecewise linear worldline 위에서 수치 적분하는 축약 모델이다.
-- 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature 로 개선했다. 다만 전체 4차원 장 방정식을 직접 푸는 적분기는 아니다.
+- 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature 와 4차원 field-sampling 적분기로 개선했다. `compute_sampled_spacetime_phase`는 target worldline 주위의 finite-width density 위에서 `phi_rs`를 직접 샘플링해 `∫ d^4x rho phi`를 근사한다. 다만 아직도 균일 격자 PDE solver 나 연속 source density 전체에 대한 완전한 4차원 Green function 적분기는 아니다.
 - self-energy 와 cross-term 분해는 추가했지만, 논문 식 (36)의 연속장 분해를 직접 푼 것이 아니라 현재 Yukawa 기반 수치 모델 위에서 해석한 것이다.
 - finite-width wavepacket 은 isotropic Gaussian profile 로 모델링했고, 3차원 상대 반경 분포에 대한 수치 적분으로 처리한다. 아직 일반적인 비등방/비가우시안 packet 은 지원하지 않는다.
 - 새 displacement/coherent-state 계산은 선택한 유한 개의 momentum mode 위에서 수치 적분한다. 따라서 논문 식의 연속 Fourier 적분 전체를 그대로 구현한 것은 아니다.
