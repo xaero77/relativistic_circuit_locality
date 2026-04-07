@@ -37,6 +37,10 @@
 - C² 연속 cubic spline worldline 보간 (`SplineBranchPath`), spline 곡선을 세분된 piecewise linear 궤적으로 변환하는 `refined_branch_path`
 - parametric approximation 을 넘어서는 mode-by-mode Fock-space Hamiltonian 진화 (Magnus expansion 2차항 time-ordering correction 포함)
 - 오차 기반 적응형 세분화 quadrature (`compute_adaptive_phase_integral`), Neville 알고리즘 기반 Richardson extrapolation (`compute_richardson_extrapolated_phase`)
+- 3차 Magnus expansion (nested commutator triple integral) 으로 비섭동적 QFT 보정 확대
+- 격자점 사이 역거리 가중(IDW) 보간으로 연속 field 값 제공 (`interpolate_field_lattice`)
+- 1-loop RG running coupling α(E) 에너지 의존 effective coupling (`compute_running_coupling_phase_matrix`)
+- symbolic bookkeeping 수치 검증 (`validate_symbolic_bookkeeping`)
 
 현재 코드는 논문의 parametric approximation 안에서 동작한다. 즉, 완전한 QFT 동역학을 직접 적분하지 않고, 시간 이산화된 궤적과 준정적 상호작용 커널을 이용해 논문의 구조를 계산 가능한 형태로 단순화했다.
 
@@ -62,6 +66,9 @@
 - Fock-space 진화: `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution`
 - adaptive quadrature: `AdaptivePhaseResult`, `compute_adaptive_phase_integral`
 - Richardson extrapolation: `RichardsonExtrapolationResult`, `compute_richardson_extrapolated_phase`
+- lattice 보간: `InterpolatedFieldResult`, `interpolate_field_lattice`
+- running coupling: `RunningCouplingResult`, `compute_running_coupling_phase_matrix`
+- bookkeeping 검증: `BookkeepingValidationResult`, `validate_symbolic_bookkeeping`
 
 ## 전파 모드
 

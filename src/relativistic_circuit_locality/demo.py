@@ -42,6 +42,10 @@ from .scalar_field import (
     compute_fock_space_evolution,
     compute_adaptive_phase_integral,
     compute_richardson_extrapolated_phase,
+    interpolate_field_lattice,
+    compute_running_coupling_phase_matrix,
+    validate_symbolic_bookkeeping,
+    solve_field_lattice,
 )
 
 
@@ -351,6 +355,30 @@ def main() -> None:
     print("richardson_phases_by_order =", tuple(round(p, 6) for p in richardson[0][0].phases_by_order))
     print("richardson_extrapolated =", round(richardson[0][0].extrapolated_phase, 6))
     print("richardson_error =", richardson[0][0].estimated_error)
+    fock3 = compute_fock_space_evolution(
+        branches_a[0], branches_b[0], momenta,
+        field_mass=0.5, source_width_a=0.2, source_width_b=0.2,
+        magnus_order=3,
+    )
+    print("fock_third_order_correction =", round(fock3.third_order_correction, 8))
+    print("fock_total_phase_3rd =", round(fock3.total_phase, 6))
+    lattice = solve_field_lattice(
+        branches_a[0], time_slices=(0.0, 2.0, 4.0),
+        spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        mass=0.5,
+    )
+    interp = interpolate_field_lattice(lattice, 1.0, (1.5, 0.0, 0.0))
+    print("interpolated_field_value =", round(interp.value, 6))
+    print("nearest_field_value =", round(interp.nearest_value, 6))
+    running = compute_running_coupling_phase_matrix(
+        branches_a[:1], branches_b[:1], mass=0.5,
+        energy_scale=5.0, beta_coefficient=0.1,
+    )
+    print("bare_phase =", round(running.bare_matrix[0][0], 6))
+    print("running_phase =", round(running.running_matrix[0][0], 6))
+    validation = validate_symbolic_bookkeeping(labeled_mode_samples)
+    print("bookkeeping_consistent =", validation.is_consistent)
+    print("bookkeeping_max_norm_residual =", max(validation.norm_residuals))
 
 
 if __name__ == "__main__":

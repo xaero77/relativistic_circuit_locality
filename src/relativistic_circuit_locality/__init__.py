@@ -160,6 +160,12 @@ from .scalar_field import (
     compute_adaptive_phase_integral,
     RichardsonExtrapolationResult,
     compute_richardson_extrapolated_phase,
+    InterpolatedFieldResult,
+    interpolate_field_lattice,
+    RunningCouplingResult,
+    compute_running_coupling_phase_matrix,
+    BookkeepingValidationResult,
+    validate_symbolic_bookkeeping,
 )
 
 __all__ = [
@@ -322,4 +328,10 @@ __all__ = [
     "compute_adaptive_phase_integral",
     "RichardsonExtrapolationResult",
     "compute_richardson_extrapolated_phase",
+    "InterpolatedFieldResult",
+    "interpolate_field_lattice",
+    "RunningCouplingResult",
+    "compute_running_coupling_phase_matrix",
+    "BookkeepingValidationResult",
+    "validate_symbolic_bookkeeping",
 ]

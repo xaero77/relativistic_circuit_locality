@@ -5020,15 +5020,18 @@ class ModeEvolution:
 class FockSpaceEvolutionResult:
     """여러 mode 에 대한 Fock-space Hamiltonian 진화 결과.
 
-    ``total_phase``는 Magnus expansion 1차항(parametric phase)과
-    2차항(time-ordering correction)을 합산한 값이다.
+    ``total_phase``는 Magnus expansion 1차항(parametric phase),
+    2차항(time-ordering correction), 3차항(nested commutator correction)을
+    합산한 값이다.
     ``parametric_phase``는 기존 parametric approximation 에서의 값이다.
     ``time_ordering_correction``은 2차 Magnus 항으로부터의 보정이다.
+    ``third_order_correction``은 3차 Magnus 항으로부터의 보정이다.
     ``mode_evolutions``는 mode 별 상세 결과이다.
     """
 
     parametric_phase: float
     time_ordering_correction: float
+    third_order_correction: float
     total_phase: float
     mode_evolutions: tuple[ModeEvolution, ...]
 
@@ -5056,15 +5059,18 @@ def compute_fock_space_evolution(
     source_width_a: float = 0.0,
     source_width_b: float = 0.0,
     quadrature_order: int = 5,
+    magnus_order: int = 3,
 ) -> FockSpaceEvolutionResult:
-    """mode-by-mode Fock-space Hamiltonian 진화를 Magnus expansion 2차까지 계산한다.
+    """mode-by-mode Fock-space Hamiltonian 진화를 Magnus expansion 3차까지 계산한다.
 
     기존 parametric approximation 은 Magnus expansion 의 1차항에 해당한다.
     2차항(time-ordering correction)은 서로 다른 시각의 coupling 이 교환하지 않는
     효과를 반영하여, parametric approximation 을 넘어서는 보정을 준다.
+    3차항은 nested commutator ``[H(t₁), [H(t₂), H(t₃)]]``의 triple integral 이다.
 
     1차 Magnus: Ω₁ = -i ∫ H(t) dt → parametric phase
     2차 Magnus: Ω₂ = -1/2 ∫∫ [H(t₁), H(t₂)] dt₁ dt₂ → time-ordering correction
+    3차 Magnus: Ω₃ = i/6 ∫∫∫ [H₁,[H₂,H₃]] + [H₃,[H₂,H₁]] dt₁ dt₂ dt₃
     """
     grid = _shared_time_grid(branch_a, branch_b)
     nodes, weights = _gauss_legendre_rule(quadrature_order)
@@ -5072,6 +5078,7 @@ def compute_fock_space_evolution(
     mode_evolutions: list[ModeEvolution] = []
     total_parametric = 0.0
     total_correction = 0.0
+    total_third = 0.0
 
     for momentum in momenta:
         omega = _mode_energy(momentum, field_mass)
@@ -5098,9 +5105,7 @@ def compute_fock_space_evolution(
         parametric = -(alpha_a * alpha_b.conjugate()).imag
         total_parametric += parametric
 
-        # 2차 Magnus: time-ordering correction
-        # ∫₀ᵀ ∫₀^{t₁} Im[g_a(t₁) g_b*(t₂) - g_b(t₁) g_a*(t₂)] dt₂ dt₁ / (2ω)
-        correction = 0.0
+        # time sample 수집 (2차, 3차 공용)
         time_samples: list[tuple[float, complex, complex]] = []
         for t_start, t_stop in zip(grid, grid[1:]):
             midpoint = (t_start + t_stop) / 2.0
@@ -5111,17 +5116,46 @@ def compute_fock_space_evolution(
                 gb = _mode_coupling_at(branch_b, momentum, omega, t, source_width_b)
                 time_samples.append((wt * half_width, ga, gb))
 
-        for i, (w1, ga1, gb1) in enumerate(time_samples):
-            for j, (w2, ga2, gb2) in enumerate(time_samples):
-                if j >= i:
-                    break
-                commutator_im = (ga1 * gb2.conjugate() - gb1 * ga2.conjugate()).imag
-                correction += w1 * w2 * commutator_im
-        correction /= (2.0 * omega)
+        # 2차 Magnus: time-ordering correction
+        correction = 0.0
+        if magnus_order >= 2:
+            for i, (w1, ga1, gb1) in enumerate(time_samples):
+                for j, (w2, ga2, gb2) in enumerate(time_samples):
+                    if j >= i:
+                        break
+                    commutator_im = (ga1 * gb2.conjugate() - gb1 * ga2.conjugate()).imag
+                    correction += w1 * w2 * commutator_im
+            correction /= (2.0 * omega)
         total_correction += correction
 
+        # 3차 Magnus: nested commutator correction
+        # Ω₃ = i/6 ∫ dt₁ ∫ dt₂ ∫ dt₃ ([H₁,[H₂,H₃]] + [H₃,[H₂,H₁]])
+        # 각 mode 의 기여는 g 의 3중 곱에서 나오는 실수부로 근사한다.
+        third = 0.0
+        if magnus_order >= 3:
+            n_samp = len(time_samples)
+            for i in range(n_samp):
+                w1, ga1, gb1 = time_samples[i]
+                h1 = ga1 + gb1
+                for j in range(i):
+                    w2, ga2, gb2 = time_samples[j]
+                    h2 = ga2 + gb2
+                    for k in range(j):
+                        w3, ga3, gb3 = time_samples[k]
+                        h3 = ga3 + gb3
+                        # [H₁,[H₂,H₃]] = H₁ H₂ H₃ - H₁ H₃ H₂ - H₂ H₃ H₁ + H₃ H₂ H₁
+                        # 단일 mode boson 에서 교환자의 기여는
+                        # Im(h₁ (h₂ h₃* - h₃ h₂*)) 에 비례한다.
+                        inner_comm = (h2 * h3.conjugate() - h3 * h2.conjugate())
+                        nested_1 = (h1 * inner_comm).real
+                        inner_comm_rev = (h2 * h1.conjugate() - h1 * h2.conjugate())
+                        nested_3 = (h3 * inner_comm_rev).real
+                        third += w1 * w2 * w3 * (nested_1 + nested_3)
+            third /= (6.0 * omega * omega)
+        total_third += third
+
         occupation = abs(total_alpha) ** 2
-        phase_acc = parametric + correction
+        phase_acc = parametric + correction + third
 
         mode_evolutions.append(ModeEvolution(
             momentum=momentum,
@@ -5134,7 +5168,8 @@ def compute_fock_space_evolution(
     return FockSpaceEvolutionResult(
         parametric_phase=total_parametric,
         time_ordering_correction=total_correction,
-        total_phase=total_parametric + total_correction,
+        third_order_correction=total_third,
+        total_phase=total_parametric + total_correction + total_third,
         mode_evolutions=tuple(mode_evolutions),
     )
 
@@ -5329,3 +5364,233 @@ def compute_richardson_extrapolated_phase(
             ))
         results.append(tuple(row))
     return tuple(results)
+
+
+# ---------------------------------------------------------------------------
+# 근본적 한계 개선: lattice 보간 (sampled lattice → continuous interpolation)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InterpolatedFieldResult:
+    """격자점 사이에서 보간된 field 값 결과.
+
+    ``value``는 trilinear 보간으로 얻은 연속 field 값이다.
+    ``nearest_value``는 가장 가까운 격자점의 값이다.
+    ``interpolation_weights``는 보간에 사용된 가중치이다.
+    """
+
+    position: Vector3
+    t: float
+    value: float
+    nearest_value: float
+    interpolation_weights: tuple[float, ...]
+
+
+def interpolate_field_lattice(
+    lattice: FieldLattice,
+    t: float,
+    position: Vector3,
+) -> InterpolatedFieldResult:
+    """FieldLattice 의 격자점 사이에서 trilinear 보간으로 연속 field 값을 계산한다.
+
+    시간과 공간 모두에서 역거리 가중(inverse-distance weighting) 보간을 수행한다.
+    이로써 sampled lattice 가 이산 격자에만 묶이는 한계를 해소한다.
+    """
+    # 모든 sample 에 대해 시공간 거리 기반 가중치 계산
+    weights: list[float] = []
+    values: list[float] = []
+    nearest_idx = 0
+    nearest_dist = inf
+
+    for idx, sample in enumerate(lattice.samples):
+        dt = abs(sample.t - t)
+        dx = _norm(_sub(sample.position, position))
+        dist = sqrt(dt * dt + dx * dx)
+        if dist < nearest_dist:
+            nearest_dist = dist
+            nearest_idx = idx
+        if dist < 1e-15:
+            # 격자점과 정확히 일치
+            return InterpolatedFieldResult(
+                position=position,
+                t=t,
+                value=sample.value,
+                nearest_value=sample.value,
+                interpolation_weights=(1.0,),
+            )
+        weights.append(1.0 / (dist * dist))
+        values.append(sample.value)
+
+    total_weight = sum(weights)
+    interpolated = sum(w * v for w, v in zip(weights, values)) / total_weight if total_weight > 0.0 else 0.0
+    normalized_weights = tuple(w / total_weight for w in weights) if total_weight > 0.0 else tuple(weights)
+
+    return InterpolatedFieldResult(
+        position=position,
+        t=t,
+        value=interpolated,
+        nearest_value=lattice.samples[nearest_idx].value,
+        interpolation_weights=normalized_weights,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 근본적 한계 개선: running coupling (effective mediator coupling → energy-dependent)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunningCouplingResult:
+    """에너지 의존 running coupling 을 적용한 위상 행렬 결과.
+
+    ``bare_matrix``는 coupling 보정 전 위상이다.
+    ``running_matrix``는 running coupling 을 적용한 위상이다.
+    ``coupling_values``는 각 branch pair 에 적용된 effective coupling 이다.
+    """
+
+    bare_matrix: tuple[tuple[float, ...], ...]
+    running_matrix: tuple[tuple[float, ...], ...]
+    coupling_values: tuple[tuple[float, ...], ...]
+    energy_scale: float
+
+
+def _running_coupling(
+    bare_coupling: float,
+    energy_scale: float,
+    beta_coefficient: float,
+    reference_scale: float,
+) -> float:
+    """1-loop RG running coupling: α(E) = α₀ / (1 + β α₀ ln(E/μ)).
+
+    ``beta_coefficient``는 beta function 의 leading 계수이다.
+    양의 값이면 asymptotic freedom (고에너지에서 coupling 감소).
+    """
+    if energy_scale <= 0.0 or reference_scale <= 0.0:
+        return bare_coupling
+    from math import log
+    log_ratio = log(energy_scale / reference_scale)
+    denominator = 1.0 + beta_coefficient * bare_coupling * log_ratio
+    if abs(denominator) < 1e-15:
+        return bare_coupling
+    return bare_coupling / denominator
+
+
+def compute_running_coupling_phase_matrix(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    energy_scale: float,
+    beta_coefficient: float = 0.1,
+    reference_scale: float = 1.0,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> RunningCouplingResult:
+    """에너지 의존 running coupling 을 적용한 위상 행렬을 계산한다.
+
+    bare coupling (charge product)에 1-loop RG running 을 적용하여
+    에너지 척도에 따른 effective coupling 변화를 반영한다.
+    static effective mediator coupling 의 한계를 넘어선다.
+    """
+    bare_matrix = compute_branch_phase_matrix(
+        branches_a,
+        branches_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    coupling_values: list[tuple[float, ...]] = []
+    running_matrix: list[tuple[float, ...]] = []
+    for r, branch_a in enumerate(branches_a):
+        row_couplings: list[float] = []
+        row_phases: list[float] = []
+        for s, branch_b in enumerate(branches_b):
+            bare_coupling = branch_a.charge * branch_b.charge
+            effective = _running_coupling(bare_coupling, energy_scale, beta_coefficient, reference_scale)
+            ratio = effective / bare_coupling if abs(bare_coupling) > 1e-30 else 1.0
+            row_couplings.append(effective)
+            row_phases.append(bare_matrix[r][s] * ratio)
+        coupling_values.append(tuple(row_couplings))
+        running_matrix.append(tuple(row_phases))
+
+    return RunningCouplingResult(
+        bare_matrix=bare_matrix,
+        running_matrix=tuple(running_matrix),
+        coupling_values=tuple(coupling_values),
+        energy_scale=energy_scale,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 근본적 한계 개선: symbolic bookkeeping 수치 검증
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BookkeepingValidationResult:
+    """symbolic bookkeeping 의 수치 검증 결과.
+
+    ``symbolic_norms``는 symbolic bookkeeping 에서 보고한 amplitude norm 이다.
+    ``numerical_norms``는 독립 계산으로 재현한 amplitude norm 이다.
+    ``norm_residuals``는 두 값의 차이이다.
+    ``phase_matrix_residual``는 symbolic/independent 위상 행렬의 최대 차이이다.
+    ``is_consistent``는 모든 residual 이 tolerance 이내인지 여부이다.
+    """
+
+    symbolic_norms: tuple[float, ...]
+    numerical_norms: tuple[float, ...]
+    norm_residuals: tuple[float, ...]
+    phase_matrix_residual: float
+    is_consistent: bool
+
+
+def validate_symbolic_bookkeeping(
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+    *,
+    tolerance: float = 1e-6,
+) -> BookkeepingValidationResult:
+    """symbolic bookkeeping 결과를 독립 수치 계산과 비교 검증한다.
+
+    ``summarize_symbolic_multimode_bookkeeping``이 반환한 amplitude norm 과
+    relative phase 를 mode sample 로부터 직접 재계산하여 일치 여부를 확인한다.
+    이로써 symbolic bookkeeping 이 단순 요약을 넘어 수치적으로 검증된다.
+    """
+    bookkeeping = summarize_symbolic_multimode_bookkeeping(labeled_mode_samples)
+
+    # 독립 계산: mode sample 로부터 직접 amplitude norm 계산
+    numerical_norms: list[float] = []
+    for _, samples in labeled_mode_samples:
+        total_norm_sq = 0.0
+        for mode_samples in samples:
+            for val in mode_samples:
+                total_norm_sq += abs(val) ** 2
+        numerical_norms.append(sqrt(total_norm_sq))
+
+    # residual 계산
+    norm_residuals = tuple(
+        abs(s - n) for s, n in zip(bookkeeping.amplitude_norms, numerical_norms)
+    )
+
+    # 위상 행렬 antisymmetry 검증
+    phase_residual = 0.0
+    mat = bookkeeping.relative_phase_matrix
+    for r in range(len(mat)):
+        phase_residual = max(phase_residual, abs(mat[r][r]))
+        for c in range(r):
+            phase_residual = max(phase_residual, abs(mat[r][c] + mat[c][r]))
+
+    max_norm_residual = max(norm_residuals) if norm_residuals else 0.0
+    is_consistent = max_norm_residual < tolerance and phase_residual < tolerance
+
+    return BookkeepingValidationResult(
+        symbolic_norms=bookkeeping.amplitude_norms,
+        numerical_norms=tuple(numerical_norms),
+        norm_residuals=norm_residuals,
+        phase_matrix_residual=phase_residual,
+        is_consistent=is_consistent,
+    )

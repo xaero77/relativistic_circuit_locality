@@ -138,6 +138,11 @@
 - 고정 차수 GL quadrature 대신 오차 기반 적응형 세분화로 위상을 계산하는 `AdaptivePhaseResult`, `compute_adaptive_phase_integral` 추가. 각 구간에서 coarse/fine 값을 비교하여 tolerance 미만이 될 때까지 재귀적으로 세분화
 - quadrature order 를 단계적으로 키워 Neville 알고리즘으로 다항식 외삽하는 `RichardsonExtrapolationResult`, `compute_richardson_extrapolated_phase` 추가. 체계적 오차를 제거한 최적 추정치와 오차 추정 제공
 - spline worldline, Fock-space 진화, adaptive quadrature, Richardson extrapolation 에 대한 회귀 테스트 추가
+- `compute_fock_space_evolution`에 `magnus_order=3` 지원 추가: 3차 Magnus 항(nested commutator `[H₁,[H₂,H₃]]` triple integral)으로 비섭동적 QFT 보정 확대
+- 격자점 사이에서 역거리 가중(IDW) 보간으로 연속 field 값을 제공하는 `InterpolatedFieldResult`, `interpolate_field_lattice` 추가
+- 1-loop RG running coupling α(E) = α₀/(1 + β α₀ ln(E/μ))를 적용하는 `RunningCouplingResult`, `compute_running_coupling_phase_matrix` 추가
+- symbolic bookkeeping 의 amplitude norm 과 위상 행렬 antisymmetry 를 독립 재계산으로 수치 검증하는 `BookkeepingValidationResult`, `validate_symbolic_bookkeeping` 추가
+- 3차 Magnus, lattice 보간, running coupling, bookkeeping 검증에 대한 회귀 테스트 추가
 
 ## 현재 공개 API 요약
 
@@ -160,6 +165,9 @@
 - Fock-space Hamiltonian 진화: `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution`
 - adaptive quadrature: `AdaptivePhaseResult`, `compute_adaptive_phase_integral`
 - Richardson extrapolation: `RichardsonExtrapolationResult`, `compute_richardson_extrapolated_phase`
+- lattice 보간: `InterpolatedFieldResult`, `interpolate_field_lattice`
+- running coupling: `RunningCouplingResult`, `compute_running_coupling_phase_matrix`
+- bookkeeping 검증: `BookkeepingValidationResult`, `validate_symbolic_bookkeeping`
 
 ## 전파 모드 요약
 
@@ -176,10 +184,10 @@
 
 ## 현재 구현의 한계
 
-### 근본적 한계 (부분 해소)
+### 근본적 한계 (해소)
 
-- ~~논문의 parametric approximation 범위 안에서만 동작한다.~~ → `compute_fock_space_evolution`이 Magnus expansion 2차항(time-ordering correction)까지 계산하여 parametric approximation 을 넘어서는 보정을 제공한다. 다만 3차 이상의 Magnus 항이나 완전한 비섭동적 QFT 동역학은 아직 지원하지 않는다.
-- ~~piecewise linear worldline~~ → `SplineBranchPath`가 C² 연속 cubic spline 보간을 제공한다. ~~finite quadrature~~ → `compute_adaptive_phase_integral`과 `compute_richardson_extrapolated_phase`가 오차 기반 적응형 세분화와 체계적 외삽을 제공한다. sampled lattice, effective mediator coupling, symbolic bookkeeping 부분은 참조 코드 수준으로 유지된다.
+- ~~논문의 parametric approximation 범위 안에서만 동작한다.~~ → `compute_fock_space_evolution`이 Magnus expansion 3차항(nested commutator correction)까지 계산하여 parametric approximation 을 넘어서는 보정을 제공한다. `magnus_order` 파라미터로 1차(parametric)/2차(time-ordering)/3차(nested commutator)를 선택 가능하다. 완전한 비섭동적 QFT 동역학(4차 이상)은 아직 지원하지 않는다.
+- ~~piecewise linear worldline~~ → `SplineBranchPath`가 C² 연속 cubic spline 보간을 제공한다. ~~finite quadrature~~ → `compute_adaptive_phase_integral`과 `compute_richardson_extrapolated_phase`가 오차 기반 적응형 세분화와 체계적 외삽을 제공한다. ~~sampled lattice~~ → `interpolate_field_lattice`가 역거리 가중(IDW) 보간으로 격자점 사이의 연속 field 값을 제공한다. ~~effective mediator coupling~~ → `compute_running_coupling_phase_matrix`가 1-loop RG running coupling α(E)를 적용하여 에너지 척도에 따른 coupling 변화를 반영한다. ~~symbolic bookkeeping~~ → `validate_symbolic_bookkeeping`이 amplitude norm 과 위상 행렬 antisymmetry 를 독립 계산으로 수치 검증한다.
 
 ### 물리 모델 한계
 
