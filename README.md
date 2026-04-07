@@ -63,7 +63,7 @@
 ## 파일 구성
 
 - `src/relativistic_circuit_locality/scalar_field.py`: 핵심 모델과 수치 계산 함수
-- `src/relativistic_circuit_locality/demo.py`: 최소 실행 예제
+- `src/relativistic_circuit_locality/demo.py`: 최소 실행 예제. phase matrix, sampled field, coherent-state, composite/mediator phase, wavepacket, current-limitation closure bundle, research-grade closure bundle 요약을 함께 출력한다.
 - `tests/test_scalar_field.py`: 단위 테스트
 - `CHAT.md`: 논문 해석, 구현된 기능, 남은 고도화 과제 정리
 

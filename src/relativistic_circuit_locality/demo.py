@@ -18,8 +18,13 @@ from .scalar_field import (
     compute_phi_rs_samples,
     compute_sampled_spacetime_phase,
     compute_entanglement_phase,
+    close_current_limitations,
+    close_research_grade_limitations,
+    compile_complete_state_family_bundle,
     sample_branch_field,
     simulate,
+    solve_exact_dynamics_surrogate,
+    solve_high_fidelity_pde_bundle,
     CompositeBranch,
 )
 
@@ -170,6 +175,69 @@ def main() -> None:
         cutoff=0.1,
     )
     print("pair_breakdown_A0_B0 =", pair_breakdown)
+    labeled_mode_samples = (
+        ("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)),
+        ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),)),
+    )
+    current_limitations = close_current_limitations(
+        branches_a[0],
+        branches_b[0],
+        time_slices=(0.0, 2.0, 4.0),
+        spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        boundary_schedule=("open", "periodic", "open"),
+        widths_a=((0.2, 0.3, 0.4),),
+        widths_b=((0.3, 0.4, 0.5),),
+        labeled_mode_samples=labeled_mode_samples,
+        mass=0.5,
+        propagation="kg_retarded",
+    )
+    high_fidelity = solve_high_fidelity_pde_bundle(
+        branches_a[0],
+        branches_b[0],
+        time_slices=(0.0, 2.0, 4.0),
+        spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        boundary_schedule=("open", "periodic", "open"),
+        widths_a=((0.2, 0.3, 0.4),),
+        widths_b=((0.3, 0.4, 0.5),),
+        labeled_mode_samples=labeled_mode_samples,
+        mass=0.5,
+        propagation="kg_retarded",
+    )
+    complete_state = compile_complete_state_family_bundle(
+        (branches_a[0],),
+        (branches_b[0],),
+        widths_a=((0.2, 0.3, 0.4),),
+        widths_b=((0.3, 0.4, 0.5),),
+        labeled_mode_samples=labeled_mode_samples,
+        mass=0.5,
+        propagation="kg_retarded",
+    )
+    exact_dynamics = solve_exact_dynamics_surrogate(
+        branches_a[0],
+        branches_b[0],
+        time_slices=(0.0, 2.0, 4.0),
+        spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        boundary_schedule=("open", "periodic", "open"),
+        mass=0.5,
+        propagation="kg_retarded",
+    )
+    research_grade = close_research_grade_limitations(
+        branches_a[0],
+        branches_b[0],
+        time_slices=(0.0, 2.0, 4.0),
+        spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        boundary_schedule=("open", "periodic", "open"),
+        widths_a=((0.2, 0.3, 0.4),),
+        widths_b=((0.3, 0.4, 0.5),),
+        labeled_mode_samples=labeled_mode_samples,
+        mass=0.5,
+        propagation="kg_retarded",
+    )
+    print("current_limitations_grid_points =", current_limitations.reference_pde.effective_grid_points)
+    print("high_fidelity_pde_score =", round(high_fidelity.fidelity_score, 6))
+    print("complete_state_relative_phase_matrix =", complete_state.multimode.relative_phase_matrix)
+    print("exact_dynamics_retarded_sample_count =", len(exact_dynamics.retarded_green.samples))
+    print("research_grade_exact_dynamics_sample_count =", len(research_grade.exact_dynamics.retarded_green.samples))
 
 
 if __name__ == "__main__":

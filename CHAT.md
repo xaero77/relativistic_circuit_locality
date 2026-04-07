@@ -96,7 +96,7 @@
 - universal state bundle 을 multimode/Appendix-D 계층까지 확장하는 `CompleteStateFamilyBundleResult`, `compile_complete_state_family_bundle` 추가
 - retarded Green sample 과 exact-mediator/QFT wrapper 를 함께 묶는 `ExactDynamicsSurrogateResult`, `solve_exact_dynamics_surrogate` 추가
 - 연구형 한계 대응을 한 번에 묶는 `ResearchGradeClosureResult`, `close_research_grade_limitations` 추가
-- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded`/`time_symmetric`/`causal_history`/`kg_retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상, displacement/coherent-state 출력 지원
+- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded`/`time_symmetric`/`causal_history`/`kg_retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상, displacement/coherent-state 출력, current-limitation closure bundle, high-fidelity PDE score, complete state family, exact dynamics surrogate, research-grade closure 요약 출력 지원
 - `unittest` 기반 회귀 테스트 추가
 - 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
 - Fourier-space displacement/coherent-state 계산에 대한 회귀 테스트 추가
