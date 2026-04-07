@@ -151,6 +151,15 @@ from .scalar_field import (
     solve_finite_difference_kg,
     solve_physical_lattice_dynamics,
     compute_lebedev_displacement_amplitudes,
+    SplineBranchPath,
+    compute_spline_branch_phase_matrix,
+    ModeEvolution,
+    FockSpaceEvolutionResult,
+    compute_fock_space_evolution,
+    AdaptivePhaseResult,
+    compute_adaptive_phase_integral,
+    RichardsonExtrapolationResult,
+    compute_richardson_extrapolated_phase,
 )
 
 __all__ = [
@@ -304,4 +313,13 @@ __all__ = [
     "solve_finite_difference_kg",
     "solve_physical_lattice_dynamics",
     "compute_lebedev_displacement_amplitudes",
+    "SplineBranchPath",
+    "compute_spline_branch_phase_matrix",
+    "ModeEvolution",
+    "FockSpaceEvolutionResult",
+    "compute_fock_space_evolution",
+    "AdaptivePhaseResult",
+    "compute_adaptive_phase_integral",
+    "RichardsonExtrapolationResult",
+    "compute_richardson_extrapolated_phase",
 ]

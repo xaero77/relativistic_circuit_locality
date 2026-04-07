@@ -118,6 +118,136 @@ class BranchPath:
         raise ValueError("Requested time could not be interpolated from trajectory points.")
 
 
+def _cubic_spline_coefficients(
+    times: tuple[float, ...],
+    values: tuple[float, ...],
+) -> tuple[tuple[float, float, float, float], ...]:
+    """natural cubic spline 계수 ``(a, b, c, d)``를 구간마다 계산한다.
+
+    구간 ``i``에서 ``f(t) = a + b*(t-t_i) + c*(t-t_i)^2 + d*(t-t_i)^3``이다.
+    """
+    n = len(times) - 1
+    h = [times[i + 1] - times[i] for i in range(n)]
+    alpha = [0.0] * (n + 1)
+    for i in range(1, n):
+        alpha[i] = (3.0 / h[i]) * (values[i + 1] - values[i]) - (3.0 / h[i - 1]) * (values[i] - values[i - 1])
+    # tridiagonal system
+    l = [1.0] * (n + 1)
+    mu = [0.0] * (n + 1)
+    z = [0.0] * (n + 1)
+    for i in range(1, n):
+        l[i] = 2.0 * (times[i + 1] - times[i - 1]) - h[i - 1] * mu[i - 1]
+        mu[i] = h[i] / l[i]
+        z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i]
+    c_coeff = [0.0] * (n + 1)
+    b_coeff = [0.0] * n
+    d_coeff = [0.0] * n
+    for j in range(n - 1, -1, -1):
+        c_coeff[j] = z[j] - mu[j] * c_coeff[j + 1]
+        b_coeff[j] = (values[j + 1] - values[j]) / h[j] - h[j] * (c_coeff[j + 1] + 2.0 * c_coeff[j]) / 3.0
+        d_coeff[j] = (c_coeff[j + 1] - c_coeff[j]) / (3.0 * h[j])
+    return tuple(
+        (values[i], b_coeff[i], c_coeff[i], d_coeff[i]) for i in range(n)
+    )
+
+
+@dataclass(frozen=True)
+class SplineBranchPath:
+    """cubic spline 보간을 쓰는 BranchPath.
+
+    C² 연속 궤적을 제공하므로 위상 적분의 정밀도가 piecewise linear 보간보다 높다.
+    ``as_branch_path()``로 기존 API 와 호환되는 ``BranchPath``로 변환할 수 있다.
+    """
+
+    label: str
+    charge: float
+    points: tuple[TrajectoryPoint, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.points) < 2:
+            raise ValueError("Each branch path needs at least two trajectory points.")
+        times = [point.t for point in self.points]
+        if any(t1 >= t2 for t1, t2 in zip(times, times[1:])):
+            raise ValueError("Trajectory times must be strictly increasing.")
+        # spline 계수를 미리 계산해 둔다.
+        ts = tuple(p.t for p in self.points)
+        xs = tuple(p.position[0] for p in self.points)
+        ys = tuple(p.position[1] for p in self.points)
+        zs = tuple(p.position[2] for p in self.points)
+        object.__setattr__(self, "_times", ts)
+        object.__setattr__(self, "_cx", _cubic_spline_coefficients(ts, xs))
+        object.__setattr__(self, "_cy", _cubic_spline_coefficients(ts, ys))
+        object.__setattr__(self, "_cz", _cubic_spline_coefficients(ts, zs))
+
+    @property
+    def time_window(self) -> tuple[float, float]:
+        return (self.points[0].t, self.points[-1].t)
+
+    def position_at(self, t: float) -> Vector3:
+        start, stop = self.time_window
+        if t < start or t > stop:
+            raise ValueError("Requested time lies outside the branch support.")
+        if t == stop:
+            return self.points[-1].position
+        times: tuple[float, ...] = object.__getattribute__(self, "_times")
+        cx: tuple[tuple[float, float, float, float], ...] = object.__getattribute__(self, "_cx")
+        cy: tuple[tuple[float, float, float, float], ...] = object.__getattribute__(self, "_cy")
+        cz: tuple[tuple[float, float, float, float], ...] = object.__getattribute__(self, "_cz")
+        for i in range(len(times) - 1):
+            if times[i] <= t <= times[i + 1]:
+                dt = t - times[i]
+                ax, bx, ccx, dx = cx[i]
+                ay, by, ccy, dy = cy[i]
+                az, bz, ccz, dz = cz[i]
+                x = ax + bx * dt + ccx * dt * dt + dx * dt * dt * dt
+                y = ay + by * dt + ccy * dt * dt + dy * dt * dt * dt
+                z = az + bz * dt + ccz * dt * dt + dz * dt * dt * dt
+                return (x, y, z)
+        raise ValueError("Requested time could not be interpolated from trajectory points.")
+
+    def as_branch_path(self) -> BranchPath:
+        """기존 API 와 호환되는 BranchPath 로 변환한다."""
+        return BranchPath(label=self.label, charge=self.charge, points=self.points)
+
+    def refined_branch_path(self, subdivisions: int = 4) -> BranchPath:
+        """각 구간을 ``subdivisions``개로 세분화한 BranchPath 를 반환한다.
+
+        spline 의 곡선 정보를 세분된 piecewise linear 궤적으로 옮긴다.
+        """
+        new_points: list[TrajectoryPoint] = [self.points[0]]
+        for left, right in zip(self.points, self.points[1:]):
+            for k in range(1, subdivisions + 1):
+                frac = k / subdivisions
+                t = left.t + frac * (right.t - left.t)
+                new_points.append(TrajectoryPoint(t, self.position_at(t)))
+        return BranchPath(label=self.label, charge=self.charge, points=tuple(new_points))
+
+
+def compute_spline_branch_phase_matrix(
+    branches_a: tuple[SplineBranchPath, ...],
+    branches_b: tuple[SplineBranchPath, ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    subdivisions: int = 4,
+) -> tuple[tuple[float, ...], ...]:
+    """SplineBranchPath 를 세분화한 뒤 기존 위상 행렬을 계산한다."""
+    refined_a = tuple(s.refined_branch_path(subdivisions) for s in branches_a)
+    refined_b = tuple(s.refined_branch_path(subdivisions) for s in branches_b)
+    return compute_branch_phase_matrix(
+        refined_a,
+        refined_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+
+
 @dataclass(frozen=True)
 class SimulationResult:
     closest_approach: float
@@ -4868,3 +4998,334 @@ def compute_lebedev_displacement_amplitudes(
         quadrature_order=lebedev_order,
         direction_count=len(directions),
     )
+
+
+# ---------------------------------------------------------------------------
+# 근본적 한계 개선: mode-by-mode Fock-space Hamiltonian 진화
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ModeEvolution:
+    """단일 momentum mode 의 Hamiltonian 진화 결과."""
+
+    momentum: Vector3
+    omega: float
+    displacement: complex
+    phase_accumulated: float
+    occupation_number: float
+
+
+@dataclass(frozen=True)
+class FockSpaceEvolutionResult:
+    """여러 mode 에 대한 Fock-space Hamiltonian 진화 결과.
+
+    ``total_phase``는 Magnus expansion 1차항(parametric phase)과
+    2차항(time-ordering correction)을 합산한 값이다.
+    ``parametric_phase``는 기존 parametric approximation 에서의 값이다.
+    ``time_ordering_correction``은 2차 Magnus 항으로부터의 보정이다.
+    ``mode_evolutions``는 mode 별 상세 결과이다.
+    """
+
+    parametric_phase: float
+    time_ordering_correction: float
+    total_phase: float
+    mode_evolutions: tuple[ModeEvolution, ...]
+
+
+def _mode_coupling_at(
+    branch: BranchPath,
+    momentum: Vector3,
+    omega: float,
+    time: float,
+    source_width: float,
+) -> complex:
+    """시각 ``time``에서 source-field coupling ``g_k(t) = q * f(k) * e^{i(ωt - k·x(t))}``."""
+    suppression = exp(-0.5 * source_width * source_width * _dot(momentum, momentum))
+    pos = branch.position_at(time)
+    spatial_phase = _dot(momentum, pos)
+    return branch.charge * suppression * complex_exp(1j * (omega * time - spatial_phase))
+
+
+def compute_fock_space_evolution(
+    branch_a: BranchPath,
+    branch_b: BranchPath,
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+    source_width_a: float = 0.0,
+    source_width_b: float = 0.0,
+    quadrature_order: int = 5,
+) -> FockSpaceEvolutionResult:
+    """mode-by-mode Fock-space Hamiltonian 진화를 Magnus expansion 2차까지 계산한다.
+
+    기존 parametric approximation 은 Magnus expansion 의 1차항에 해당한다.
+    2차항(time-ordering correction)은 서로 다른 시각의 coupling 이 교환하지 않는
+    효과를 반영하여, parametric approximation 을 넘어서는 보정을 준다.
+
+    1차 Magnus: Ω₁ = -i ∫ H(t) dt → parametric phase
+    2차 Magnus: Ω₂ = -1/2 ∫∫ [H(t₁), H(t₂)] dt₁ dt₂ → time-ordering correction
+    """
+    grid = _shared_time_grid(branch_a, branch_b)
+    nodes, weights = _gauss_legendre_rule(quadrature_order)
+
+    mode_evolutions: list[ModeEvolution] = []
+    total_parametric = 0.0
+    total_correction = 0.0
+
+    for momentum in momenta:
+        omega = _mode_energy(momentum, field_mass)
+
+        # 1차 Magnus: displacement amplitude α_k = ∫ g_k(t) dt / √(2ω)
+        alpha_a = 0.0j
+        alpha_b = 0.0j
+        for t_start, t_stop in zip(grid, grid[1:]):
+            midpoint = (t_start + t_stop) / 2.0
+            half_width = (t_stop - t_start) / 2.0
+            seg_a = 0.0j
+            seg_b = 0.0j
+            for nd, wt in zip(nodes, weights):
+                t = midpoint + half_width * nd
+                seg_a += wt * _mode_coupling_at(branch_a, momentum, omega, t, source_width_a)
+                seg_b += wt * _mode_coupling_at(branch_b, momentum, omega, t, source_width_b)
+            alpha_a += seg_a * half_width
+            alpha_b += seg_b * half_width
+        alpha_a /= sqrt(2.0 * omega)
+        alpha_b /= sqrt(2.0 * omega)
+        total_alpha = alpha_a + alpha_b
+
+        # parametric phase: Im(α_a* α_b) 에 비례
+        parametric = -(alpha_a * alpha_b.conjugate()).imag
+        total_parametric += parametric
+
+        # 2차 Magnus: time-ordering correction
+        # ∫₀ᵀ ∫₀^{t₁} Im[g_a(t₁) g_b*(t₂) - g_b(t₁) g_a*(t₂)] dt₂ dt₁ / (2ω)
+        correction = 0.0
+        time_samples: list[tuple[float, complex, complex]] = []
+        for t_start, t_stop in zip(grid, grid[1:]):
+            midpoint = (t_start + t_stop) / 2.0
+            half_width = (t_stop - t_start) / 2.0
+            for nd, wt in zip(nodes, weights):
+                t = midpoint + half_width * nd
+                ga = _mode_coupling_at(branch_a, momentum, omega, t, source_width_a)
+                gb = _mode_coupling_at(branch_b, momentum, omega, t, source_width_b)
+                time_samples.append((wt * half_width, ga, gb))
+
+        for i, (w1, ga1, gb1) in enumerate(time_samples):
+            for j, (w2, ga2, gb2) in enumerate(time_samples):
+                if j >= i:
+                    break
+                commutator_im = (ga1 * gb2.conjugate() - gb1 * ga2.conjugate()).imag
+                correction += w1 * w2 * commutator_im
+        correction /= (2.0 * omega)
+        total_correction += correction
+
+        occupation = abs(total_alpha) ** 2
+        phase_acc = parametric + correction
+
+        mode_evolutions.append(ModeEvolution(
+            momentum=momentum,
+            omega=omega,
+            displacement=total_alpha,
+            phase_accumulated=phase_acc,
+            occupation_number=occupation,
+        ))
+
+    return FockSpaceEvolutionResult(
+        parametric_phase=total_parametric,
+        time_ordering_correction=total_correction,
+        total_phase=total_parametric + total_correction,
+        mode_evolutions=tuple(mode_evolutions),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 근본적 한계 개선: adaptive quadrature 위상 적분
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AdaptivePhaseResult:
+    """적응형 quadrature 위상 적분 결과."""
+
+    phase: float
+    estimated_error: float
+    segments_used: int
+    quadrature_order: int
+
+
+def compute_adaptive_phase_integral(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    tolerance: float = 1e-6,
+    max_subdivisions: int = 8,
+) -> tuple[tuple[AdaptivePhaseResult, ...], ...]:
+    """오차 기반 적응형 세분화로 위상 행렬을 계산한다.
+
+    각 시간 구간에서 GL quadrature 값과 구간을 2등분한 값을 비교하여
+    차이가 ``tolerance``를 넘으면 재귀적으로 세분화한다.
+    """
+    kernel = _make_kernel(mass, cutoff)
+
+    def _adaptive_segment(
+        branch_a: BranchPath,
+        branch_b: BranchPath,
+        t_start: float,
+        t_stop: float,
+        depth: int,
+    ) -> tuple[float, float, int]:
+        """구간 하나에 대한 적응형 적분. (값, 오차추정, 세분횟수)를 반환한다."""
+        nodes, weights = _gauss_legendre_rule(quadrature_order)
+        midpoint = (t_start + t_stop) / 2.0
+        half_width = (t_stop - t_start) / 2.0
+
+        def _evaluate_segment(t0: float, t1: float) -> float:
+            mid = (t0 + t1) / 2.0
+            hw = (t1 - t0) / 2.0
+            seg = 0.0
+            for nd, wt in zip(nodes, weights):
+                sample_time = mid + hw * nd
+                if propagation == "instantaneous":
+                    pa = branch_a.position_at(sample_time)
+                    pb = branch_b.position_at(sample_time)
+                    distance = _norm(_sub(pa, pb))
+                    seg += wt * kernel(distance)
+                elif propagation == "kg_retarded":
+                    fv = _kg_retarded_field(
+                        branch_a, branch_b, sample_time,
+                        mass=mass, cutoff=cutoff, light_speed=light_speed,
+                        quadrature_order=quadrature_order, proper_time_cutoff=1e-9,
+                    )
+                    seg += wt * fv
+                else:
+                    pa = branch_a.position_at(sample_time)
+                    pb = branch_b.position_at(sample_time)
+                    distance = _norm(_sub(pa, pb))
+                    seg += wt * kernel(distance)
+            return seg * hw
+
+        coarse = _evaluate_segment(t_start, t_stop)
+        fine = _evaluate_segment(t_start, midpoint) + _evaluate_segment(midpoint, t_stop)
+        error = abs(fine - coarse)
+
+        if error < tolerance or depth >= max_subdivisions:
+            return fine, error, 1
+        else:
+            left_val, left_err, left_seg = _adaptive_segment(
+                branch_a, branch_b, t_start, midpoint, depth + 1,
+            )
+            right_val, right_err, right_seg = _adaptive_segment(
+                branch_a, branch_b, midpoint, t_stop, depth + 1,
+            )
+            return left_val + right_val, left_err + right_err, left_seg + right_seg
+
+    results: list[tuple[AdaptivePhaseResult, ...]] = []
+    for branch_a in branches_a:
+        row: list[AdaptivePhaseResult] = []
+        for branch_b in branches_b:
+            grid = _shared_time_grid(branch_a, branch_b)
+            total_phase = 0.0
+            total_error = 0.0
+            total_segments = 0
+            for t_start, t_stop in zip(grid, grid[1:]):
+                val, err, segs = _adaptive_segment(branch_a, branch_b, t_start, t_stop, 0)
+                total_phase += val
+                total_error += err
+                total_segments += segs
+            total_phase *= -branch_a.charge * branch_b.charge
+            total_error *= abs(branch_a.charge * branch_b.charge)
+            row.append(AdaptivePhaseResult(
+                phase=total_phase,
+                estimated_error=total_error,
+                segments_used=total_segments,
+                quadrature_order=quadrature_order,
+            ))
+        results.append(tuple(row))
+    return tuple(results)
+
+
+def _make_kernel(mass: float, cutoff: float) -> Callable[[float], float]:
+    def kernel(distance: float) -> float:
+        effective_distance = max(distance, cutoff)
+        return exp(-mass * effective_distance) / (4.0 * pi * effective_distance)
+    return kernel
+
+
+# ---------------------------------------------------------------------------
+# 근본적 한계 개선: Richardson extrapolation 위상 계산
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RichardsonExtrapolationResult:
+    """Richardson extrapolation 위상 계산 결과.
+
+    ``phases_by_order``는 각 quadrature order 에서의 위상 값이다.
+    ``extrapolated_phase``는 외삽된 최적 추정치이다.
+    ``estimated_error``는 마지막 두 order 값의 차이 기반 오차 추정이다.
+    """
+
+    phases_by_order: tuple[float, ...]
+    extrapolated_phase: float
+    estimated_error: float
+    orders_used: tuple[int, ...]
+
+
+def compute_richardson_extrapolated_phase(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    orders: tuple[int, ...] = (2, 4, 6, 8),
+) -> tuple[tuple[RichardsonExtrapolationResult, ...], ...]:
+    """quadrature order 를 단계적으로 키워 Richardson extrapolation 으로 외삽한다.
+
+    각 order 에서 위상을 계산한 뒤, Neville 알고리즘으로 다항식 외삽하여
+    체계적 오차를 제거한 최적 추정치를 얻는다.
+    """
+    results: list[tuple[RichardsonExtrapolationResult, ...]] = []
+    for i, branch_a in enumerate(branches_a):
+        row: list[RichardsonExtrapolationResult] = []
+        for j, branch_b in enumerate(branches_b):
+            phase_values: list[float] = []
+            for order in orders:
+                matrix = compute_branch_phase_matrix(
+                    (branch_a,),
+                    (branch_b,),
+                    mass=mass,
+                    cutoff=cutoff,
+                    propagation=propagation,
+                    light_speed=light_speed,
+                    quadrature_order=order,
+                )
+                phase_values.append(matrix[0][0])
+            # Neville 알고리즘으로 다항식 외삽
+            n = len(phase_values)
+            table = [list(phase_values)]
+            h_values = [1.0 / (o * o) for o in orders]  # h ~ 1/order²
+            for k in range(1, n):
+                new_row: list[float] = []
+                for m in range(n - k):
+                    num = h_values[m] * table[k - 1][m + 1] - h_values[m + k] * table[k - 1][m]
+                    den = h_values[m] - h_values[m + k]
+                    new_row.append(num / den if abs(den) > 1e-30 else table[k - 1][m + 1])
+                table.append(new_row)
+            extrapolated = table[-1][0] if table[-1] else phase_values[-1]
+            error = abs(extrapolated - phase_values[-1]) if len(phase_values) >= 2 else 0.0
+            row.append(RichardsonExtrapolationResult(
+                phases_by_order=tuple(phase_values),
+                extrapolated_phase=extrapolated,
+                estimated_error=error,
+                orders_used=orders,
+            ))
+        results.append(tuple(row))
+    return tuple(results)

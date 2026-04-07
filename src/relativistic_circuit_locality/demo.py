@@ -37,6 +37,11 @@ from .scalar_field import (
     solve_finite_difference_kg,
     solve_physical_lattice_dynamics,
     compute_lebedev_displacement_amplitudes,
+    SplineBranchPath,
+    compute_spline_branch_phase_matrix,
+    compute_fock_space_evolution,
+    compute_adaptive_phase_integral,
+    compute_richardson_extrapolated_phase,
 )
 
 
@@ -312,6 +317,40 @@ def main() -> None:
     )
     print("lebedev_direction_count =", lebedev.direction_count)
     print("lebedev_amplitudes =", lebedev.amplitudes)
+
+    # --- 근본적 한계 개선 데모 ---
+    sp_a = (SplineBranchPath("A0", 1.0, (
+        TrajectoryPoint(0.0, (-2.0, 0.0, 0.0)),
+        TrajectoryPoint(2.0, (-1.5, 0.5, 0.0)),
+        TrajectoryPoint(4.0, (-2.0, 0.0, 0.0)),
+    )),)
+    sp_b = (SplineBranchPath("B0", 1.0, (
+        TrajectoryPoint(0.0, (2.0, 0.0, 0.0)),
+        TrajectoryPoint(2.0, (1.5, -0.5, 0.0)),
+        TrajectoryPoint(4.0, (2.0, 0.0, 0.0)),
+    )),)
+    spline_phase = compute_spline_branch_phase_matrix(sp_a, sp_b, mass=0.5)
+    print("spline_phase_matrix =", spline_phase)
+    fock = compute_fock_space_evolution(
+        branches_a[0], branches_b[0], momenta,
+        field_mass=0.5, source_width_a=0.2, source_width_b=0.2,
+    )
+    print("fock_parametric_phase =", round(fock.parametric_phase, 6))
+    print("fock_time_ordering_correction =", round(fock.time_ordering_correction, 8))
+    print("fock_total_phase =", round(fock.total_phase, 6))
+    print("fock_mode_count =", len(fock.mode_evolutions))
+    adaptive = compute_adaptive_phase_integral(
+        branches_a[:1], branches_b[:1], mass=0.5, tolerance=1e-8,
+    )
+    print("adaptive_phase =", round(adaptive[0][0].phase, 6))
+    print("adaptive_error =", adaptive[0][0].estimated_error)
+    print("adaptive_segments =", adaptive[0][0].segments_used)
+    richardson = compute_richardson_extrapolated_phase(
+        branches_a[:1], branches_b[:1], mass=0.5, orders=(2, 4, 6, 8),
+    )
+    print("richardson_phases_by_order =", tuple(round(p, 6) for p in richardson[0][0].phases_by_order))
+    print("richardson_extrapolated =", round(richardson[0][0].extrapolated_phase, 6))
+    print("richardson_error =", richardson[0][0].estimated_error)
 
 
 if __name__ == "__main__":

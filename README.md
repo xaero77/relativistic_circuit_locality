@@ -34,6 +34,9 @@
 - von Neumann entropy, negativity, entanglement witness, visibility 진단, mode occupation distribution
 - 1+1D leapfrog finite-difference Klein-Gordon solver (absorbing/reflecting/periodic 경계), 물리적 lattice time stepper with radiation damping
 - Lebedev spherical quadrature (6/14/26-point), Gauss-Legendre order 10 확장, Bessel J1 asymptotic expansion, numpy FFT, retarded time bisection fallback, 3D backreaction gradient
+- C² 연속 cubic spline worldline 보간 (`SplineBranchPath`), spline 곡선을 세분된 piecewise linear 궤적으로 변환하는 `refined_branch_path`
+- parametric approximation 을 넘어서는 mode-by-mode Fock-space Hamiltonian 진화 (Magnus expansion 2차항 time-ordering correction 포함)
+- 오차 기반 적응형 세분화 quadrature (`compute_adaptive_phase_integral`), Neville 알고리즘 기반 Richardson extrapolation (`compute_richardson_extrapolated_phase`)
 
 현재 코드는 논문의 parametric approximation 안에서 동작한다. 즉, 완전한 QFT 동역학을 직접 적분하지 않고, 시간 이산화된 궤적과 준정적 상호작용 커널을 이용해 논문의 구조를 계산 가능한 형태로 단순화했다.
 
@@ -55,6 +58,10 @@
 - 얽힘 진단: `EntanglementMeasures`, `compute_entanglement_measures`, `ModeOccupationDistribution`, `compute_mode_occupation_distribution`
 - PDE/격자: `FiniteDifferencePdeResult`, `solve_finite_difference_kg`, `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics`
 - Lebedev quadrature: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`
+- cubic spline worldline: `SplineBranchPath`, `compute_spline_branch_phase_matrix`
+- Fock-space 진화: `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution`
+- adaptive quadrature: `AdaptivePhaseResult`, `compute_adaptive_phase_integral`
+- Richardson extrapolation: `RichardsonExtrapolationResult`, `compute_richardson_extrapolated_phase`
 
 ## 전파 모드
 

@@ -133,6 +133,11 @@
 - `_retarded_source_time`에 fixed-point iteration 실패 시 64회 bisection fallback 추가
 - `evolve_backreacted_branch`에서 1D gradient 를 3D gradient 로 확장하여 off-axis 방향 backreaction 지원
 - proper time, tensor mediator, renormalized phase, decoherence, multi-body, backreaction, entanglement measures, mode occupation, finite-difference KG, physical lattice, Lebedev quadrature 에 대한 회귀 테스트 추가
+- piecewise linear worldline 대신 C² 연속 cubic spline 보간을 제공하는 `SplineBranchPath` 및 `compute_spline_branch_phase_matrix` 추가. `refined_branch_path(subdivisions)` 로 spline 곡선을 세분된 piecewise linear 궤적으로 변환 가능
+- parametric approximation 을 넘어서는 mode-by-mode Fock-space Hamiltonian 진화 `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution` 추가. Magnus expansion 1차항(parametric phase)과 2차항(time-ordering correction)을 분리 계산
+- 고정 차수 GL quadrature 대신 오차 기반 적응형 세분화로 위상을 계산하는 `AdaptivePhaseResult`, `compute_adaptive_phase_integral` 추가. 각 구간에서 coarse/fine 값을 비교하여 tolerance 미만이 될 때까지 재귀적으로 세분화
+- quadrature order 를 단계적으로 키워 Neville 알고리즘으로 다항식 외삽하는 `RichardsonExtrapolationResult`, `compute_richardson_extrapolated_phase` 추가. 체계적 오차를 제거한 최적 추정치와 오차 추정 제공
+- spline worldline, Fock-space 진화, adaptive quadrature, Richardson extrapolation 에 대한 회귀 테스트 추가
 
 ## 현재 공개 API 요약
 
@@ -151,6 +156,10 @@
 - 얽힘 진단 확장: `EntanglementMeasures`, `compute_entanglement_measures`, `ModeOccupationDistribution`, `compute_mode_occupation_distribution`
 - PDE/격자 개선: `FiniteDifferencePdeResult`, `solve_finite_difference_kg`, `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics`
 - 수치 알고리즘 개선: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`
+- cubic spline worldline: `SplineBranchPath`, `compute_spline_branch_phase_matrix`
+- Fock-space Hamiltonian 진화: `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution`
+- adaptive quadrature: `AdaptivePhaseResult`, `compute_adaptive_phase_integral`
+- Richardson extrapolation: `RichardsonExtrapolationResult`, `compute_richardson_extrapolated_phase`
 
 ## 전파 모드 요약
 
@@ -167,10 +176,10 @@
 
 ## 현재 구현의 한계
 
-### 근본적 한계
+### 근본적 한계 (부분 해소)
 
-- 논문의 parametric approximation 범위 안에서만 동작한다. 완전한 QFT 동역학을 직접 적분하지 않는다.
-- piecewise linear worldline, finite quadrature, sampled lattice, effective mediator coupling, symbolic bookkeeping 을 결합한 참조 코드 수준이다.
+- ~~논문의 parametric approximation 범위 안에서만 동작한다.~~ → `compute_fock_space_evolution`이 Magnus expansion 2차항(time-ordering correction)까지 계산하여 parametric approximation 을 넘어서는 보정을 제공한다. 다만 3차 이상의 Magnus 항이나 완전한 비섭동적 QFT 동역학은 아직 지원하지 않는다.
+- ~~piecewise linear worldline~~ → `SplineBranchPath`가 C² 연속 cubic spline 보간을 제공한다. ~~finite quadrature~~ → `compute_adaptive_phase_integral`과 `compute_richardson_extrapolated_phase`가 오차 기반 적응형 세분화와 체계적 외삽을 제공한다. sampled lattice, effective mediator coupling, symbolic bookkeeping 부분은 참조 코드 수준으로 유지된다.
 
 ### 물리 모델 한계
 
