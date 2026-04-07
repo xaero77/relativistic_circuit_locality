@@ -6,13 +6,18 @@ from math import asinh, pi
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
     TrajectoryPoint,
+    analyze_branch_pair_coherent_state,
     analyze_branch_pair_phase,
     analyze_phase_decomposition,
     analyze_wavepacket_phase_decomposition,
+    compute_branch_displacement_amplitudes,
     compute_branch_phase_matrix,
+    compute_branch_pair_displacements,
     compute_closest_approach,
+    compute_displacement_operator_phase,
     compute_entanglement_phase,
     compute_wavepacket_phase_matrix,
+    evolve_coherent_state,
     field_mediation_intervals,
     is_field_mediated,
 )
@@ -228,6 +233,50 @@ class ScalarFieldTests(unittest.TestCase):
                     + decomposition.interaction_matrix[r][s]
                     + decomposition.self_phases_b[s],
                 )
+
+    def test_pair_displacement_is_sum_of_single_branch_displacements(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 2.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
+        displacement_left = compute_branch_displacement_amplitudes((left,), momenta, field_mass=0.5, source_width=0.2)
+        displacement_right = compute_branch_displacement_amplitudes((right,), momenta, field_mass=0.5, source_width=0.3)
+        pair = compute_branch_pair_displacements(
+            (left,),
+            (right,),
+            momenta,
+            field_mass=0.5,
+            source_width_a=0.2,
+            source_width_b=0.3,
+        )
+        for index in range(len(momenta)):
+            self.assertAlmostEqual(pair[0][0][index].real, displacement_left[0][index].real + displacement_right[0][index].real)
+            self.assertAlmostEqual(pair[0][0][index].imag, displacement_left[0][index].imag + displacement_right[0][index].imag)
+
+    def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
+        profile = (1.0 + 2.0j, -0.5j)
+        self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
+
+    def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
+        momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
+        initial = (1.0 + 2.0j, -0.25 + 0.75j)
+        evolved = evolve_coherent_state(initial, momenta, field_mass=0.5, elapsed_time=3.0)
+        self.assertAlmostEqual(evolved.occupation_number, sum(abs(value) ** 2 for value in initial))
+
+    def test_branch_pair_coherent_state_tracks_pair_displacement_norm(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0), (0.5, 0.5, 0.0))
+        pair = compute_branch_pair_displacements((left,), (right,), momenta, field_mass=0.5, source_width_a=0.2, source_width_b=0.2)
+        coherent = analyze_branch_pair_coherent_state(
+            left,
+            right,
+            momenta,
+            field_mass=0.5,
+            source_width_a=0.2,
+            source_width_b=0.2,
+            elapsed_time=1.0,
+        )
+        self.assertAlmostEqual(coherent.occupation_number, sum(abs(value) ** 2 for value in pair[0][0]))
 
 
 if __name__ == "__main__":

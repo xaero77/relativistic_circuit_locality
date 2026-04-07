@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """스칼라장 모형에서 분기 궤적을 비교하는 유틸리티."""
 
+from cmath import exp as complex_exp
 from functools import lru_cache
 from dataclasses import dataclass
 from math import exp, inf, pi, sinh, sqrt
@@ -95,6 +96,13 @@ class PhaseDecompositionResult:
     directed_cross_matrix_ba: tuple[tuple[float, ...], ...]
     interaction_matrix: tuple[tuple[float, ...], ...]
     total_matrix: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class CoherentStateEvolution:
+    mode_amplitudes: tuple[complex, ...]
+    occupation_number: float
+    displacement_norm: float
 
 
 WidthSpec = float | tuple[float, ...]
@@ -226,6 +234,10 @@ def _yukawa_kernel(distance: float, mass: float, cutoff: float) -> float:
     return exp(-mass * effective_distance) / (4.0 * pi * effective_distance)
 
 
+def _mode_energy(momentum: Vector3, mass: float) -> float:
+    return sqrt(_dot(momentum, momentum) + mass * mass)
+
+
 @lru_cache(maxsize=None)
 def _gauss_legendre_rule(order: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
     rules = {
@@ -312,6 +324,32 @@ def _pair_phase_integral(
             segment_integral += weight * kernel(distance)
         phase -= branch_a.charge * branch_b.charge * segment_integral * half_width
     return phase
+
+
+def _branch_time_integral(
+    branch: BranchPath,
+    integrand: Callable[[float], complex],
+    *,
+    quadrature_order: int,
+) -> complex:
+    grid = _shared_time_grid(branch)
+    nodes, weights = _gauss_legendre_rule(quadrature_order)
+    total = 0.0j
+    for t_start, t_stop in zip(grid, grid[1:]):
+        midpoint = (t_start + t_stop) / 2.0
+        half_width = (t_stop - t_start) / 2.0
+        segment = 0.0j
+        for node, weight in zip(nodes, weights):
+            sample_time = midpoint + half_width * node
+            segment += weight * integrand(sample_time)
+        total += segment * half_width
+    return total
+
+
+def _source_form_factor(branch: BranchPath, momentum: Vector3, time: float, source_width: float) -> complex:
+    suppression = exp(-0.5 * source_width * source_width * _dot(momentum, momentum))
+    phase = _dot(momentum, branch.position_at(time))
+    return branch.charge * suppression * complex_exp(-1j * phase)
 
 
 def _branch_pair_phase(
@@ -421,6 +459,142 @@ def compute_branch_phase_matrix(
             for branch_b in branches_b
         )
         for branch_a in branches_a
+    )
+
+
+def compute_branch_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+    source_width: float = 0.0,
+    quadrature_order: int = 3,
+    observation_time: float | None = None,
+) -> tuple[tuple[complex, ...], ...]:
+    if field_mass < 0.0:
+        raise ValueError("field_mass must be non-negative.")
+    if source_width < 0.0:
+        raise ValueError("source_width must be non-negative.")
+    if quadrature_order <= 0:
+        raise ValueError("quadrature_order must be positive.")
+    amplitudes: list[tuple[complex, ...]] = []
+    for branch in branches:
+        end_time = branch.time_window[1]
+        readout_time = end_time if observation_time is None else observation_time
+        branch_amplitudes: list[complex] = []
+        for momentum in momenta:
+            omega = _mode_energy(momentum, field_mass)
+            displacement = _branch_time_integral(
+                branch,
+                lambda sample_time, mode=momentum, frequency=omega: (
+                    complex_exp(1j * frequency * sample_time)
+                    * _source_form_factor(branch, mode, sample_time, source_width)
+                ),
+                quadrature_order=quadrature_order,
+            )
+            branch_amplitudes.append(
+                (-1j / sqrt(2.0 * omega)) * displacement * complex_exp(-1j * omega * (readout_time - end_time))
+            )
+        amplitudes.append(tuple(branch_amplitudes))
+    return tuple(amplitudes)
+
+
+def compute_branch_pair_displacements(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+    source_width_a: float = 0.0,
+    source_width_b: float = 0.0,
+    quadrature_order: int = 3,
+    observation_time: float | None = None,
+) -> tuple[tuple[tuple[complex, ...], ...], ...]:
+    amplitudes_a = compute_branch_displacement_amplitudes(
+        branches_a,
+        momenta,
+        field_mass=field_mass,
+        source_width=source_width_a,
+        quadrature_order=quadrature_order,
+        observation_time=observation_time,
+    )
+    amplitudes_b = compute_branch_displacement_amplitudes(
+        branches_b,
+        momenta,
+        field_mass=field_mass,
+        source_width=source_width_b,
+        quadrature_order=quadrature_order,
+        observation_time=observation_time,
+    )
+    return tuple(
+        tuple(
+            tuple(amplitudes_a[r][mode] + amplitudes_b[s][mode] for mode in range(len(momenta)))
+            for s in range(len(branches_b))
+        )
+        for r in range(len(branches_a))
+    )
+
+
+def compute_displacement_operator_phase(
+    left: tuple[complex, ...],
+    right: tuple[complex, ...],
+) -> float:
+    if len(left) != len(right):
+        raise ValueError("Displacement profiles must have the same number of momentum modes.")
+    commutator = sum(alpha * beta.conjugate() - alpha.conjugate() * beta for alpha, beta in zip(left, right))
+    return 0.5 * commutator.imag
+
+
+def evolve_coherent_state(
+    mode_amplitudes: tuple[complex, ...],
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+    elapsed_time: float = 0.0,
+) -> CoherentStateEvolution:
+    if field_mass < 0.0:
+        raise ValueError("field_mass must be non-negative.")
+    if len(mode_amplitudes) != len(momenta):
+        raise ValueError("mode_amplitudes and momenta must have the same length.")
+    evolved = tuple(
+        amplitude * complex_exp(-1j * _mode_energy(momentum, field_mass) * elapsed_time)
+        for amplitude, momentum in zip(mode_amplitudes, momenta)
+    )
+    norm_sq = sum(abs(amplitude) ** 2 for amplitude in evolved)
+    return CoherentStateEvolution(
+        mode_amplitudes=evolved,
+        occupation_number=norm_sq,
+        displacement_norm=sqrt(norm_sq),
+    )
+
+
+def analyze_branch_pair_coherent_state(
+    branch_a: BranchPath,
+    branch_b: BranchPath,
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+    source_width_a: float = 0.0,
+    source_width_b: float = 0.0,
+    quadrature_order: int = 3,
+    observation_time: float | None = None,
+    elapsed_time: float = 0.0,
+) -> CoherentStateEvolution:
+    pair_displacements = compute_branch_pair_displacements(
+        (branch_a,),
+        (branch_b,),
+        momenta,
+        field_mass=field_mass,
+        source_width_a=source_width_a,
+        source_width_b=source_width_b,
+        quadrature_order=quadrature_order,
+        observation_time=observation_time,
+    )
+    return evolve_coherent_state(
+        pair_displacements[0][0],
+        momenta,
+        field_mass=field_mass,
+        elapsed_time=elapsed_time,
     )
 
 

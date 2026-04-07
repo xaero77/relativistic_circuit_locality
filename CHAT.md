@@ -34,15 +34,20 @@
 - isotropic Gaussian width 를 가진 branch 별 finite-width wavepacket 모델에 대해 Yukawa kernel 을 상대 반경 분포 위에서 직접 적분하는 `compute_wavepacket_phase_matrix` 구현
 - finite-width wavepacket 모델에서도 self/cross/interaction/total 분해를 계산하는 `analyze_wavepacket_phase_decomposition` 구현
 - 결과를 한 번에 묶는 `SimulationResult` 및 `simulate` 구현
+- branch worldline 로부터 momentum mode 별 Fourier-space displacement amplitude `compute_branch_displacement_amplitudes` 구현
+- 두 계의 branch 조합 `(r, s)`마다 displacement profile 을 합성하는 `compute_branch_pair_displacements` 구현
+- displacement operator 합성에서 생기는 BCH 위상을 mode profile 로 계산하는 `compute_displacement_operator_phase` 구현
+- branch pair 가 만드는 field coherent state 의 자유 진화와 occupation number 를 추적하는 `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state` 구현
 - 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상 출력 지원
 - `unittest` 기반 회귀 테스트 추가
 - 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
+- Fourier-space displacement/coherent-state 계산에 대한 회귀 테스트 추가
 
 ## 추가해야 할 기능
 
-- 식 (84), (85), (90), (103)을 직접 따르는 Fourier-space displacement operator 수치 구현
 - massive Klein-Gordon retarded solution 기반의 완전한 `phi_rs` 계산기
-- 논문 Appendix D 수준의 coherent-state 진화 추적
+- 논문 식 (84), (85), (90), (103)의 연속 운동량 적분을 직접 재현하는 고정밀 Fourier-space displacement operator 적분기
+- 논문 Appendix D 의 모든 위상 항과 vacuum overlap 까지 포함하는 완전한 coherent-state 진화 추적
 - 다입자 일반화와 gauge field/general relativity 버전
 
 ## 현재 구현의 한계
@@ -51,6 +56,8 @@
 - 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature 로 개선했다. 다만 전체 4차원 장 방정식을 직접 푸는 적분기는 아니다.
 - self-energy 와 cross-term 분해는 추가했지만, 논문 식 (36)의 연속장 분해를 직접 푼 것이 아니라 현재 Yukawa 기반 수치 모델 위에서 해석한 것이다.
 - finite-width wavepacket 은 isotropic Gaussian profile 로 모델링했고, 3차원 상대 반경 분포에 대한 수치 적분으로 처리한다. 아직 일반적인 비등방/비가우시안 packet 은 지원하지 않는다.
+- 새 displacement/coherent-state 계산은 선택한 유한 개의 momentum mode 위에서 수치 적분한다. 따라서 논문 식의 연속 Fourier 적분 전체를 그대로 구현한 것은 아니다.
+- coherent-state 진화는 자유장 위상 회전과 occupation number 추적까지는 포함하지만, Appendix D 의 모든 vacuum phase 및 overlap determinant 를 아직 포함하지 않는다.
 - 구현 전체는 여전히 QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
 - microcausality 자체를 commutator 적분으로 평가하지 않고, spacelike separation criterion 으로 판정한다.
 

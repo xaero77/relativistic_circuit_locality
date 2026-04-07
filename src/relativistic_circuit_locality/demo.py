@@ -5,7 +5,11 @@ from __future__ import annotations
 from .scalar_field import (
     BranchPath,
     TrajectoryPoint,
+    analyze_branch_pair_coherent_state,
     analyze_branch_pair_phase,
+    compute_branch_displacement_amplitudes,
+    compute_branch_pair_displacements,
+    compute_displacement_operator_phase,
     compute_wavepacket_phase_matrix,
     compute_entanglement_phase,
     simulate,
@@ -43,6 +47,37 @@ def main() -> None:
         "retarded_relative_entangling_phase =",
         round(compute_entanglement_phase(retarded.phase_matrix, 0, 1, 0, 1), 6),
     )
+    momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0), (0.5, 0.5, 0.0))
+    displacement_a = compute_branch_displacement_amplitudes(
+        branches_a,
+        momenta,
+        field_mass=0.5,
+        source_width=0.2,
+    )
+    pair_displacements = compute_branch_pair_displacements(
+        branches_a,
+        branches_b,
+        momenta,
+        field_mass=0.5,
+        source_width_a=0.2,
+        source_width_b=0.2,
+    )
+    print("single_branch_displacements_A =", displacement_a)
+    print("pair_displacements =", pair_displacements)
+    print(
+        "pair_displacement_phase_A0B0_vs_A1B1 =",
+        round(compute_displacement_operator_phase(pair_displacements[0][0], pair_displacements[1][1]), 6),
+    )
+    coherent_state = analyze_branch_pair_coherent_state(
+        branches_a[0],
+        branches_b[0],
+        momenta,
+        field_mass=0.5,
+        source_width_a=0.2,
+        source_width_b=0.2,
+        elapsed_time=1.5,
+    )
+    print("coherent_state_A0_B0 =", coherent_state)
     wavepacket_matrix = compute_wavepacket_phase_matrix(
         branches_a,
         branches_b,

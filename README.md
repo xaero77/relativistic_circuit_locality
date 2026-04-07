@@ -13,6 +13,7 @@
 - 논문의 `d_min > 0` 조건에 대응하는 최소 접근 거리 계산
 - on-shell scalar-field phase `theta_rs = -1/2 ∫ rho_rs phi_rs`의 준정적 Yukawa 근사
 - branch 조합 사이의 상대 얽힘 위상 계산
+- 유한 개 momentum mode 에 대한 Fourier-space displacement amplitude 와 coherent-state 자유 진화 추적
 
 현재 코드는 논문의 parametric approximation 안에서 동작한다. 즉, 완전한 QFT 동역학을 직접 적분하지 않고, 시간 이산화된 궤적과 준정적 상호작용 커널을 이용해 논문의 구조를 계산 가능한 형태로 단순화했다.
 
