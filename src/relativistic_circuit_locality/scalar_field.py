@@ -884,6 +884,46 @@ def _bessel_j1(x: float, *, tolerance: float = 1e-12, max_terms: int = 64) -> fl
     return total
 
 
+def _regularized_light_cone_delta(invariant_interval_sq: float, shell_width: float) -> float:
+    if shell_width <= 0.0:
+        raise ValueError("shell_width must be positive.")
+    normalizer = sqrt(2.0 * pi) * shell_width
+    exponent = -0.5 * (invariant_interval_sq / shell_width) ** 2
+    return exp(exponent) / normalizer
+
+
+def _pauli_jordan_commutator(
+    delta_t: float,
+    spatial_distance: float,
+    *,
+    mass: float,
+    light_speed: float,
+    shell_width: float,
+    tolerance: float,
+) -> float:
+    if light_speed <= 0.0:
+        raise ValueError("light_speed must be positive.")
+    if mass < 0.0:
+        raise ValueError("mass must be non-negative.")
+    if abs(delta_t) <= tolerance:
+        sign = 0.0
+    else:
+        sign = 1.0 if delta_t > 0.0 else -1.0
+    if sign == 0.0:
+        return 0.0
+
+    invariant_interval_sq = light_speed * light_speed * delta_t * delta_t - spatial_distance * spatial_distance
+    shell_term = sign * _regularized_light_cone_delta(invariant_interval_sq, shell_width) / (2.0 * pi)
+    if invariant_interval_sq <= tolerance:
+        return shell_term if abs(invariant_interval_sq) <= shell_width else 0.0
+
+    proper_time = sqrt(max(invariant_interval_sq, 0.0)) / light_speed
+    if proper_time <= tolerance:
+        return shell_term
+    tail_term = -sign * mass * _bessel_j1(mass * proper_time) / (4.0 * pi * proper_time)
+    return shell_term + tail_term
+
+
 @lru_cache(maxsize=None)
 def _gauss_legendre_rule(order: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
     rules = {
@@ -3581,18 +3621,68 @@ def evaluate_microcausality_commutator(
     branches_a: tuple[BranchPath, ...],
     branches_b: tuple[BranchPath, ...],
     *,
+    mass: float = 0.0,
     light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    shell_width: float | None = None,
     tolerance: float = 1e-9,
 ) -> ExactMicrocausalityResult:
-    intervals = field_mediation_intervals(branches_a, branches_b, light_speed=light_speed)
+    if light_speed <= 0.0:
+        raise ValueError("light_speed must be positive.")
+    if mass < 0.0:
+        raise ValueError("mass must be non-negative.")
+    if quadrature_order < 1:
+        raise ValueError("quadrature_order must be at least 1.")
+    if not branches_a or not branches_b:
+        return ExactMicrocausalityResult(interval_commutators=(), bounded=True)
+
+    segment_times = sorted(
+        {
+            point.t
+            for branch in branches_a + branches_b
+            for point in branch.points
+        }
+    )
+    if len(segment_times) < 2:
+        return ExactMicrocausalityResult(interval_commutators=(0.0,), bounded=True)
+
+    min_dt = min(
+        max(segment_times[index + 1] - segment_times[index], tolerance)
+        for index in range(len(segment_times) - 1)
+    )
+    effective_shell_width = shell_width if shell_width is not None else max(light_speed * min_dt * tolerance, tolerance * tolerance)
+    nodes, weights = _gauss_legendre_rule(quadrature_order)
     commutators: list[float] = []
-    for start, stop in intervals:
-        commutators.append(max(0.0, stop - start) * 0.0)
-    if not intervals:
-        commutators.append(1.0)
+    for branch_a in branches_a:
+        for branch_b in branches_b:
+            for a_start, a_stop in zip(branch_a.points, branch_a.points[1:]):
+                a_midpoint = (a_start.t + a_stop.t) / 2.0
+                a_half_width = (a_stop.t - a_start.t) / 2.0
+                for b_start, b_stop in zip(branch_b.points, branch_b.points[1:]):
+                    b_midpoint = (b_start.t + b_stop.t) / 2.0
+                    b_half_width = (b_stop.t - b_start.t) / 2.0
+                    segment_commutator = 0.0
+                    for node_a, weight_a in zip(nodes, weights):
+                        sample_time_a = a_midpoint + a_half_width * node_a
+                        position_a = branch_a.position_at(sample_time_a)
+                        for node_b, weight_b in zip(nodes, weights):
+                            sample_time_b = b_midpoint + b_half_width * node_b
+                            position_b = branch_b.position_at(sample_time_b)
+                            delta_t = sample_time_a - sample_time_b
+                            distance = _norm(_sub(position_a, position_b))
+                            value = _pauli_jordan_commutator(
+                                delta_t,
+                                distance,
+                                mass=mass,
+                                light_speed=light_speed,
+                                shell_width=effective_shell_width,
+                                tolerance=tolerance,
+                            )
+                            segment_commutator += weight_a * weight_b * abs(value)
+                    commutators.append(segment_commutator * a_half_width * b_half_width)
     return ExactMicrocausalityResult(
         interval_commutators=tuple(commutators),
-        bounded=max(commutators) <= tolerance,
+        bounded=max(commutators, default=0.0) <= tolerance,
     )
 
 
@@ -3641,7 +3731,7 @@ def solve_full_qft_surrogate(
         nonlinearity=nonlinearity,
         tolerance=tolerance,
     )
-    microcausality = evaluate_microcausality_commutator((source,), (target,), light_speed=light_speed)
+    microcausality = evaluate_microcausality_commutator((source,), (target,), mass=mass, light_speed=light_speed)
     return FullQftSurrogateResult(pde=pde, gauge_gravity=gauge_gravity, microcausality=microcausality)
 
 
@@ -3758,7 +3848,7 @@ def solve_exact_mediator_surrogate(
         nonlinearity=nonlinearity,
         tolerance=tolerance,
     )
-    microcausality = evaluate_microcausality_commutator((source,), (target,), light_speed=light_speed)
+    microcausality = evaluate_microcausality_commutator((source,), (target,), mass=mass, light_speed=light_speed)
     consistent = microcausality.bounded and all(
         result.backreaction.result.residual >= 0.0
         for result in (

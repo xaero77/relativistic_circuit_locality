@@ -897,6 +897,14 @@ class ScalarFieldTests(unittest.TestCase):
         target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
         result = evaluate_microcausality_commutator((source,), (target,))
         self.assertTrue(result.bounded)
+        self.assertTrue(all(abs(value) <= 1e-9 for value in result.interval_commutators))
+
+    def test_evaluate_microcausality_commutator_detects_timelike_overlap(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = evaluate_microcausality_commutator((source,), (target,), mass=0.5)
+        self.assertFalse(result.bounded)
+        self.assertGreater(max(result.interval_commutators), 1e-6)
 
     def test_solve_full_qft_surrogate_returns_nested_results(self) -> None:
         source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
