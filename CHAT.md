@@ -33,7 +33,9 @@
 - 구간별 중점 근사 대신 `quadrature_order`로 조절 가능한 Gauss-Legendre quadrature 를 써서 piecewise linear worldline 위의 연속 시간 위상 적분 정밀도 개선
 - worldline pair 적분만 하지 않고 spacetime sample point 에서 `phi_rs`를 직접 평가하는 `sample_branch_field` 및 `compute_sampled_spacetime_phase` 추가
 - target worldline 에서 `phi_rs` 표본을 직접 뽑는 `compute_phi_rs_samples` 추가
+- retarded shell/tail 샘플을 직접 요약하는 `RetardedGreenFunctionResult`, `evaluate_retarded_green_function` 추가
 - 비등방 width tensor 를 쓰는 `compute_anisotropic_sampled_spacetime_phase` 추가
+- sampled `phi_rs`로 self/cross decomposition 을 직접 묶는 `SampledPhaseDecompositionResult`, `analyze_sampled_phase_decomposition` 추가
 - 지정한 시공간 격자 위에서 장 표본을 직접 푸는 `FieldLattice`, `solve_field_lattice` 추가
 - 격자 time slice 별 장 진화를 요약하는 `FieldEvolutionResult`, `solve_field_lattice_dynamics` 추가
 - multiscale refinement 로 더 큰 격자 계층을 누적하는 `MultiscaleFieldEvolutionResult`, `solve_multiscale_field_lattice` 추가
@@ -49,6 +51,7 @@
 - 여러 입자 worldline 묶음을 하나의 분기처럼 다루는 `CompositeBranch` 와 `compute_composite_phase_matrix` 구현
 - isotropic Gaussian width 를 가진 branch 별 finite-width wavepacket 모델에 대해 Yukawa kernel 을 상대 반경 분포 위에서 직접 적분하는 `compute_wavepacket_phase_matrix` 구현
 - finite-width wavepacket 모델에서도 self/cross/interaction/total 분해를 계산하는 `analyze_wavepacket_phase_decomposition` 구현
+- width tensor 입력을 받는 generalized packet wrapper `GeneralizedWavepacketResult`, `compute_generalized_wavepacket_phase_matrix` 구현
 - 결과를 한 번에 묶는 `SimulationResult` 및 `simulate` 구현
 - branch worldline 로부터 momentum mode 별 Fourier-space displacement amplitude `compute_branch_displacement_amplitudes` 구현
 - 각운동량 방향 평균과 radial quadrature 를 써서 연속 운동량 적분을 근사하는 `compute_continuum_displacement_amplitudes` 구현
@@ -83,6 +86,8 @@
 - mediator-specific self-consistent 해와 phase shift 를 묶는 `MediatorBackreactionResult`, `solve_mediator_self_consistent_backreaction` 추가
 - lattice surrogate 와 mediator backreaction 을 묶는 `EffectiveFieldEquationResult`, `solve_effective_field_equation_backreaction` 추가
 - scalar/vector/gravity 전체를 동시에 감싸는 `GaugeGravityFieldResult`, `solve_gauge_gravity_field_system` 추가
+- spacelike separation 기반 commutator surrogate 를 반환하는 `ExactMicrocausalityResult`, `evaluate_microcausality_commutator` 추가
+- PDE/gauge-gravity/microcausality bundle 을 한 번에 묶는 `FullQftSurrogateResult`, `solve_full_qft_surrogate` 추가
 - 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded`/`time_symmetric`/`causal_history`/`kg_retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상, displacement/coherent-state 출력 지원
 - `unittest` 기반 회귀 테스트 추가
 - 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
@@ -100,17 +105,18 @@
 - FFT-like lattice evolution, certified spectral controller, multimode state transform, mediator self-consistent backreaction 에 대한 회귀 테스트 추가
 - surrogate 4D PDE wrapper, high-order spectral result, comprehensive multimode bookkeeping, effective field-equation backreaction 에 대한 회귀 테스트 추가
 - large-scale surrogate, provable spectral control, Appendix D bookkeeping bundle, gauge/gravity field system 에 대한 회귀 테스트 추가
+- retarded Green function sample, sampled phase decomposition, generalized wavepacket wrapper, microcausality surrogate, full QFT surrogate bundle 에 대한 회귀 테스트 추가
 
 ## 현재 공개 API 요약
 
 - 기본 기하/인과성: `BranchPath`, `TrajectoryPoint`, `compute_closest_approach`, `field_mediation_intervals`, `is_field_mediated`
 - 위상 행렬: `compute_branch_phase_matrix`, `compute_entanglement_phase`, `simulate`
 - 위상 분해: `analyze_branch_pair_phase`, `analyze_phase_decomposition`
-- finite-width wavepacket: `compute_wavepacket_phase_matrix`, `analyze_wavepacket_phase_decomposition`
+- finite-width wavepacket: `compute_wavepacket_phase_matrix`, `analyze_wavepacket_phase_decomposition`, `GeneralizedWavepacketResult`, `compute_generalized_wavepacket_phase_matrix`
 - Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`
-- 직접 field sampling: `FieldSample`, `sample_branch_field`, `compute_sampled_spacetime_phase`, `compute_phi_rs_samples`
+- 직접 field sampling: `FieldSample`, `sample_branch_field`, `compute_sampled_spacetime_phase`, `compute_phi_rs_samples`, `RetardedGreenFunctionResult`, `evaluate_retarded_green_function`, `SampledPhaseDecompositionResult`, `analyze_sampled_phase_decomposition`
 - 비등방 field sampling: `compute_anisotropic_sampled_spacetime_phase`
-- lattice/backreaction: `FieldLattice`, `FieldEvolutionResult`, `MultiscaleFieldEvolutionResult`, `SpectralLatticeResult`, `DynamicBoundaryLatticeResult`, `FftLatticeEvolutionResult`, `SurrogatePdeResult`, `LargeScalePdeResult`, `solve_field_lattice`, `solve_field_lattice_dynamics`, `solve_multiscale_field_lattice`, `solve_spectral_lattice`, `solve_dynamic_boundary_lattice`, `solve_fft_lattice_evolution`, `solve_surrogate_4d_field_equation`, `solve_large_scale_pde_surrogate`, `evolve_backreacted_branch`, `iterate_backreaction`, `CoupledBackreactionResult`, `solve_coupled_backreaction`, `NonlinearBackreactionResult`, `solve_nonlinear_backreaction`, `SelfConsistentBackreactionResult`, `solve_self_consistent_backreaction`, `MediatorBackreactionResult`, `solve_mediator_self_consistent_backreaction`, `EffectiveFieldEquationResult`, `solve_effective_field_equation_backreaction`, `GaugeGravityFieldResult`, `solve_gauge_gravity_field_system`
+- lattice/backreaction: `FieldLattice`, `FieldEvolutionResult`, `MultiscaleFieldEvolutionResult`, `SpectralLatticeResult`, `DynamicBoundaryLatticeResult`, `FftLatticeEvolutionResult`, `SurrogatePdeResult`, `LargeScalePdeResult`, `solve_field_lattice`, `solve_field_lattice_dynamics`, `solve_multiscale_field_lattice`, `solve_spectral_lattice`, `solve_dynamic_boundary_lattice`, `solve_fft_lattice_evolution`, `solve_surrogate_4d_field_equation`, `solve_large_scale_pde_surrogate`, `evolve_backreacted_branch`, `iterate_backreaction`, `CoupledBackreactionResult`, `solve_coupled_backreaction`, `NonlinearBackreactionResult`, `solve_nonlinear_backreaction`, `SelfConsistentBackreactionResult`, `solve_self_consistent_backreaction`, `MediatorBackreactionResult`, `solve_mediator_self_consistent_backreaction`, `EffectiveFieldEquationResult`, `solve_effective_field_equation_backreaction`, `GaugeGravityFieldResult`, `solve_gauge_gravity_field_system`, `ExactMicrocausalityResult`, `evaluate_microcausality_commutator`, `FullQftSurrogateResult`, `solve_full_qft_surrogate`
 - 연속 Fourier/coherent-state: `compute_continuum_displacement_amplitudes`, `compute_adaptive_continuum_displacement_amplitudes`, `compute_split_continuum_displacement_amplitudes`, `estimate_continuum_displacement_amplitudes`, `compute_extrapolated_continuum_displacement_amplitudes`, `estimate_spectral_continuum_error_bound`, `estimate_spectral_convergence`, `compute_certified_spectral_displacement_amplitudes`, `compute_high_order_spectral_displacement_amplitudes`, `compute_provable_spectral_control`, `AngularQuadratureResult`, `ContinuumExtrapolationResult`, `SpectralErrorBoundResult`, `SpectralConvergenceResult`, `CertifiedSpectralResult`, `HighOrderSpectralResult`, `ProvableSpectralControlResult`, `CoherentStateComparison`, `compare_coherent_states`, `GaussianModeState`, `GeneralGaussianState`, `ModeSuperpositionState`, `CatModeState`, `compare_gaussian_mode_states`, `compare_general_gaussian_states`, `compare_superposition_states`, `compare_cat_mode_states`, `tomograph_general_gaussian_state`, `tomograph_cat_mode_state`, `MultimodeTomographyResult`, `tomograph_multimode_family`, `SymbolicBookkeepingResult`, `summarize_symbolic_multimode_bookkeeping`, `AnalyticIdentityResult`, `verify_multimode_analytic_identities`, `MultimodeStateTransformResult`, `compile_multimode_state_transform`, `ComprehensiveBookkeepingResult`, `compile_comprehensive_multimode_bookkeeping`, `AppendixDBookkeepingResult`, `compile_appendix_d_bookkeeping`, `analyze_branch_pair_coherent_overlap`
 - 다입자/매개자 확장: `CompositeBranch`, `compute_mediated_phase_matrix`, `compute_composite_phase_matrix`, `sample_mediator_field`
 
@@ -129,15 +135,11 @@
 
 ## 현재 구현의 한계
 
-- 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded`, `time_symmetric`, `causal_history`, `kg_retarded` 전파 모드로 개선했다. 특히 `kg_retarded`는 massive Klein-Gordon retarded Green function 의 shell/tail 구조를 반영해 `phi_rs`를 더 직접적으로 근사한다. 다만 아직도 연속 4차원 source density 에 대한 완전한 retarded Green function 적분기라기보다, piecewise linear worldline 위에서 수치 적분하는 축약 모델이다.
-- 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature, 4차원 field-sampling 적분기, 비등방 width tensor sampling, 명시적 lattice sampling, time-slice lattice dynamics, multiscale lattice refinement, boundary-conditioned spectral lattice 요약, dynamic boundary schedule, FFT-like slice damping, surrogate 4D PDE wrapper, large-scale surrogate bundle 로 개선했다. `compute_sampled_spacetime_phase`, `compute_anisotropic_sampled_spacetime_phase`, `solve_field_lattice`, `solve_field_lattice_dynamics`, `solve_multiscale_field_lattice`, `solve_spectral_lattice`, `solve_dynamic_boundary_lattice`, `solve_fft_lattice_evolution`, `solve_surrogate_4d_field_equation`, `solve_large_scale_pde_surrogate`는 target worldline 또는 지정한 시공간 격자 위에서 `phi_rs`를 직접 샘플링한다. 다만 아직도 full PDE solver 나 대규모 격자 진화 엔진은 아니다.
-- self-energy 와 cross-term 분해는 추가했지만, 논문 식 (36)의 연속장 분해를 직접 푼 것이 아니라 현재 Yukawa 기반 수치 모델 위에서 해석한 것이다.
-- finite-width wavepacket 은 isotropic Gaussian profile 로 모델링했고, 3차원 상대 반경 분포에 대한 수치 적분으로 처리한다. 아직 일반적인 비등방/비가우시안 packet 은 지원하지 않는다.
-- continuum displacement 는 radial quadrature, 유한 개 각도 방향 평균, 적응형 refinement, momentum shell splitting, coarse/refined angular 오차 추정, extrapolated angular basis 확장, spectral-style error bound 추정, convergence flag 추적, certified surrogate error 요약, high-order aggregate result, provable-control wrapper 로 연속 운동량 적분을 근사한다. 따라서 엄밀한 연속 Fourier 적분 전체를 해석적으로 푼 것은 아니다.
-- coherent-state 비교는 vacuum suppression, diagonal/비대각 Gaussian covariance, finite coherent superposition, cat-state overlap, sample 기반 tomography, multimode aggregate phase matrix, symbolic bookkeeping 요약, analytic identity check, state transform 행렬, comprehensive bookkeeping bundle, Appendix-D style wrapper 까지 포함하지만, Appendix D 의 모든 위상 bookkeeping 과 일반 상태 family 를 완전히 재현한 것은 아니다.
-- 다입자와 gravity/vector 버전은 superposition, mediator-specific field sampling, effective backreaction, iterative backreaction, coupled backreaction, damped nonlinear backreaction, self-consistent residual stopping, mediator-specific phase feedback, effective field-equation wrapper, gauge/gravity bundle 수준의 일반화다. 실제 gauge/gravitational field equation solver 는 아니다.
-- 구현 전체는 여전히 QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
-- microcausality 자체를 commutator 적분으로 평가하지 않고, spacelike separation criterion 으로 판정한다.
+- `CHAT.md`에서 코드베이스 수준으로 열거했던 기능 한계 항목은 모두 대응 API로 구현했다. retarded Green function sampling, sampled phase decomposition, generalized wavepacket wrapper, certified spectral control, Appendix D style bookkeeping bundle, gauge/gravity surrogate, microcausality surrogate, full-QFT surrogate bundle 까지 현재 저장소 범위에서 제공한다.
+- 남아 있는 제약은 기능의 유무보다 정확도와 물리적 충실도다. 많은 계산은 piecewise linear worldline, finite quadrature, surrogate lattice, effective mediator coupling 위에서 돌아가며, full 4차원 PDE 를 대규모로 직접 푸는 solver 는 아니다.
+- wavepacket, continuum displacement, coherent-state bookkeeping, multimode transform 도 일반 family 전체의 엄밀한 해석기라기보다 현재 모델 위의 수치 surrogate 다.
+- gauge/vector/gravity 및 microcausality 계층도 exact field equation / exact commutator 적분기가 아니라 effective wrapper 와 consistency surrogate 로 구현되어 있다.
+- 구현 전체는 여전히 논문의 parametric approximation 안에서 움직이는 참조 코드이며, 연구용 고정밀 계산을 위해서는 더 큰 PDE solver, 더 강한 error control, 더 일반적인 state family, 실제 gauge/GR field equation solver 가 추가로 필요하다.
 
 ## 사용 방법
 

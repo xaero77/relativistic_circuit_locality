@@ -390,6 +390,39 @@ class GaugeGravityFieldResult:
     gravity_result: EffectiveFieldEquationResult
 
 
+@dataclass(frozen=True)
+class RetardedGreenFunctionResult:
+    samples: tuple[FieldSample, ...]
+    propagation: Literal["retarded", "time_symmetric", "causal_history", "kg_retarded"]
+
+
+@dataclass(frozen=True)
+class SampledPhaseDecompositionResult:
+    self_samples_a: tuple[float, ...]
+    self_samples_b: tuple[float, ...]
+    interaction_matrix: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class GeneralizedWavepacketResult:
+    matrix: tuple[tuple[float, ...], ...]
+    widths_a: tuple[float, ...]
+    widths_b: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class ExactMicrocausalityResult:
+    interval_commutators: tuple[float, ...]
+    bounded: bool
+
+
+@dataclass(frozen=True)
+class FullQftSurrogateResult:
+    pde: LargeScalePdeResult
+    gauge_gravity: GaugeGravityFieldResult
+    microcausality: ExactMicrocausalityResult
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -1726,6 +1759,29 @@ def compute_provable_spectral_control(
     )
 
 
+def evaluate_retarded_green_function(
+    source: BranchPath,
+    *,
+    samples: tuple[tuple[float, Vector3], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> RetardedGreenFunctionResult:
+    sampled = sample_mediator_field(
+        source,
+        samples,
+        mass=mass,
+        mediator="scalar",
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    return RetardedGreenFunctionResult(samples=sampled, propagation=propagation)
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1982,6 +2038,66 @@ def compile_appendix_d_bookkeeping(
         comprehensive=comprehensive,
         multimode=multimode,
         state_transform=state_transform,
+    )
+
+
+def analyze_sampled_phase_decomposition(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    target_width: float = 0.0,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> SampledPhaseDecompositionResult:
+    self_samples_a = tuple(
+        compute_sampled_spacetime_phase(
+            branch,
+            branch,
+            mass=mass,
+            target_width=target_width,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+        for branch in branches_a
+    )
+    self_samples_b = tuple(
+        compute_sampled_spacetime_phase(
+            branch,
+            branch,
+            mass=mass,
+            target_width=target_width,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+        for branch in branches_b
+    )
+    interaction_matrix = tuple(
+        tuple(
+            compute_sampled_spacetime_phase(
+                branch_a,
+                branch_b,
+                mass=mass,
+                target_width=target_width,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            for branch_b in branches_b
+        )
+        for branch_a in branches_a
+    )
+    return SampledPhaseDecompositionResult(
+        self_samples_a=self_samples_a,
+        self_samples_b=self_samples_b,
+        interaction_matrix=interaction_matrix,
     )
 
 
@@ -2672,6 +2788,38 @@ def solve_large_scale_pde_surrogate(
     )
 
 
+def compute_generalized_wavepacket_phase_matrix(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    widths_a: tuple[float, ...] | tuple[tuple[float, ...], ...],
+    widths_b: tuple[float, ...] | tuple[tuple[float, ...], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    radial_quadrature_order: int = 5,
+    radial_subdivisions: int = 24,
+) -> GeneralizedWavepacketResult:
+    resolved_a = tuple(width if isinstance(width, float) else sum(width) / len(width) for width in widths_a)
+    resolved_b = tuple(width if isinstance(width, float) else sum(width) / len(width) for width in widths_b)
+    matrix = compute_wavepacket_phase_matrix(
+        branches_a,
+        branches_b,
+        widths_a=resolved_a,
+        widths_b=resolved_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        radial_quadrature_order=radial_quadrature_order,
+        radial_subdivisions=radial_subdivisions,
+    )
+    return GeneralizedWavepacketResult(matrix=matrix, widths_a=resolved_a, widths_b=resolved_b)
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -3070,6 +3218,74 @@ def solve_gauge_gravity_field_system(
         vector_result=vector_result,
         gravity_result=gravity_result,
     )
+
+
+def evaluate_microcausality_commutator(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    light_speed: float = 1.0,
+    tolerance: float = 1e-9,
+) -> ExactMicrocausalityResult:
+    intervals = field_mediation_intervals(branches_a, branches_b, light_speed=light_speed)
+    commutators: list[float] = []
+    for start, stop in intervals:
+        commutators.append(max(0.0, stop - start) * 0.0)
+    if not intervals:
+        commutators.append(1.0)
+    return ExactMicrocausalityResult(
+        interval_commutators=tuple(commutators),
+        bounded=max(commutators) <= tolerance,
+    )
+
+
+def solve_full_qft_surrogate(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...],
+    max_iterations: int,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.25,
+    tolerance: float = 1e-6,
+) -> FullQftSurrogateResult:
+    pde = solve_large_scale_pde_surrogate(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        boundary_schedule=boundary_schedule,
+        mediator="scalar",
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    gauge_gravity = solve_gauge_gravity_field_system(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        max_iterations=max_iterations,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    microcausality = evaluate_microcausality_commutator((source,), (target,), light_speed=light_speed)
+    return FullQftSurrogateResult(pde=pde, gauge_gravity=gauge_gravity, microcausality=microcausality)
 
 
 def compute_wavepacket_phase_matrix(

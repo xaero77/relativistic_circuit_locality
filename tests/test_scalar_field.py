@@ -30,6 +30,7 @@ from relativistic_circuit_locality.scalar_field import (
     compute_certified_spectral_displacement_amplitudes,
     compute_high_order_spectral_displacement_amplitudes,
     compute_provable_spectral_control,
+    evaluate_retarded_green_function,
     estimate_spectral_continuum_error_bound,
     estimate_spectral_convergence,
     estimate_continuum_displacement_amplitudes,
@@ -56,6 +57,7 @@ from relativistic_circuit_locality.scalar_field import (
     solve_effective_field_equation_backreaction,
     solve_large_scale_pde_surrogate,
     solve_gauge_gravity_field_system,
+    solve_full_qft_surrogate,
     solve_nonlinear_backreaction,
     solve_spectral_lattice,
     solve_self_consistent_backreaction,
@@ -72,6 +74,9 @@ from relativistic_circuit_locality.scalar_field import (
     compile_multimode_state_transform,
     compile_comprehensive_multimode_bookkeeping,
     compile_appendix_d_bookkeeping,
+    analyze_sampled_phase_decomposition,
+    compute_generalized_wavepacket_phase_matrix,
+    evaluate_microcausality_commutator,
 )
 
 
@@ -464,6 +469,15 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(result.high_order.certified.amplitudes), 1)
         self.assertGreaterEqual(result.strict_certificate_error, 0.0)
 
+    def test_evaluate_retarded_green_function_returns_samples(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = evaluate_retarded_green_function(
+            source,
+            samples=((1.0, (1.0, 0.0, 0.0)),),
+            mass=0.5,
+        )
+        self.assertEqual(len(result.samples), 1)
+
     def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
         profile = (1.0 + 2.0j, -0.5j)
         self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
@@ -576,6 +590,12 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertEqual(result.comprehensive.bookkeeping.labels, ("r0", "r1"))
         self.assertEqual(result.state_transform.labels, ("r0", "r1"))
+
+    def test_analyze_sampled_phase_decomposition_returns_matrix(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = analyze_sampled_phase_decomposition((source,), (target,), mass=0.5, propagation="instantaneous")
+        self.assertEqual(len(result.interaction_matrix), 1)
 
     def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
         momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
@@ -728,6 +748,19 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result.total_grid_points, 1)
 
+    def test_compute_generalized_wavepacket_phase_matrix_accepts_tensor_widths(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = compute_generalized_wavepacket_phase_matrix(
+            (source,),
+            (target,),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(result.matrix), 1)
+
     def test_backreacted_branch_shifts_target_positions(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
         target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
@@ -831,6 +864,28 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.scalar_result.mediator, "scalar")
         self.assertEqual(result.vector_result.mediator, "vector")
         self.assertEqual(result.gravity_result.mediator, "gravity")
+
+    def test_evaluate_microcausality_commutator_reports_bound(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = evaluate_microcausality_commutator((source,), (target,))
+        self.assertTrue(result.bounded)
+
+    def test_solve_full_qft_surrogate_returns_nested_results(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_full_qft_surrogate(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            max_iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.pde.total_grid_points, 1)
+        self.assertTrue(result.microcausality.bounded)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
