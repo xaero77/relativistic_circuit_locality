@@ -163,6 +163,21 @@ class ScalarFieldTests(unittest.TestCase):
         causal_history = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="causal_history")
         self.assertAlmostEqual(causal_history[0][0], 0.0)
 
+    def test_kg_retarded_reduces_to_retarded_when_massless(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        retarded = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="retarded")
+        kg_retarded = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="kg_retarded")
+        self.assertAlmostEqual(retarded[0][0], kg_retarded[0][0], places=12)
+
+    def test_kg_retarded_is_sensitive_to_tail_history_for_massive_field(self) -> None:
+        short_source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        long_source = branch("A0", 1.0, [(-2.0, (0.0, 0.0, 0.0)), (0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.5, (1.0, 0.0, 0.0)), (3.0, (1.0, 0.0, 0.0))])
+        short_history = compute_branch_phase_matrix((short_source,), (target,), mass=0.5, propagation="kg_retarded")
+        long_history = compute_branch_phase_matrix((long_source,), (target,), mass=0.5, propagation="kg_retarded")
+        self.assertGreater(abs(long_history[0][0]), abs(short_history[0][0]))
+
     def test_higher_order_quadrature_better_matches_analytic_moving_worldline_integral(self) -> None:
         moving = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
         static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])

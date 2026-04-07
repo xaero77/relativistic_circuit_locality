@@ -5,7 +5,7 @@ from __future__ import annotations
 from cmath import exp as complex_exp
 from functools import lru_cache
 from dataclasses import dataclass
-from math import exp, inf, pi, sinh, sqrt
+from math import exp, factorial, inf, pi, sinh, sqrt
 from typing import Callable, Literal
 
 
@@ -238,6 +238,19 @@ def _mode_energy(momentum: Vector3, mass: float) -> float:
     return sqrt(_dot(momentum, momentum) + mass * mass)
 
 
+def _bessel_j1(x: float, *, tolerance: float = 1e-12, max_terms: int = 64) -> float:
+    if x == 0.0:
+        return 0.0
+    half_x = x / 2.0
+    total = 0.0
+    for index in range(max_terms):
+        term = ((-1.0) ** index) * (half_x ** (2 * index + 1)) / (factorial(index) * factorial(index + 1))
+        total += term
+        if abs(term) <= tolerance:
+            break
+    return total
+
+
 @lru_cache(maxsize=None)
 def _gauss_legendre_rule(order: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
     rules = {
@@ -335,14 +348,58 @@ def _causal_history_kernel(
     return total
 
 
+def _kg_retarded_tail_kernel(proper_time: float, mass: float) -> float:
+    if mass <= 0.0:
+        return 0.0
+    argument = mass * proper_time
+    return -(mass * _bessel_j1(argument)) / (4.0 * pi * proper_time)
+
+
+def _kg_retarded_field(
+    source: BranchPath,
+    target: BranchPath,
+    target_time: float,
+    *,
+    mass: float,
+    cutoff: float,
+    light_speed: float,
+    quadrature_order: int,
+    proper_time_cutoff: float,
+) -> float:
+    field_value = 0.0
+
+    retarded_time = _retarded_source_time(
+        source,
+        target,
+        target_time,
+        light_speed=light_speed,
+    )
+    if retarded_time is not None:
+        distance = _norm(_sub(target.position_at(target_time), source.position_at(retarded_time)))
+        field_value += 1.0 / (4.0 * pi * max(distance, cutoff))
+
+    field_value += _causal_history_kernel(
+        source,
+        target,
+        target_time,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        kernel=lambda proper_time: _kg_retarded_tail_kernel(proper_time, mass),
+        proper_time_cutoff=proper_time_cutoff,
+    )
+    return field_value
+
+
 def _pair_phase_integral(
     branch_a: BranchPath,
     branch_b: BranchPath,
     *,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"],
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
     light_speed: float,
     quadrature_order: int,
     kernel: Callable[[float], float],
+    mass: float,
+    cutoff: float,
 ) -> float:
     grid = _shared_time_grid(branch_a, branch_b)
     nodes, weights = _gauss_legendre_rule(quadrature_order)
@@ -376,6 +433,19 @@ def _pair_phase_integral(
                     light_speed=light_speed,
                     quadrature_order=quadrature_order,
                     kernel=kernel,
+                    proper_time_cutoff=1e-9,
+                )
+                segment_integral += weight * field_value
+                continue
+            elif propagation == "kg_retarded":
+                field_value = _kg_retarded_field(
+                    branch_a,
+                    branch_b,
+                    sample_time,
+                    mass=mass,
+                    cutoff=cutoff,
+                    light_speed=light_speed,
+                    quadrature_order=quadrature_order,
                     proper_time_cutoff=1e-9,
                 )
                 segment_integral += weight * field_value
@@ -450,7 +520,7 @@ def _branch_pair_phase(
     *,
     mass: float,
     cutoff: float,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"],
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
     light_speed: float,
     quadrature_order: int,
 ) -> float:
@@ -461,6 +531,8 @@ def _branch_pair_phase(
         light_speed=light_speed,
         quadrature_order=quadrature_order,
         kernel=lambda distance: _yukawa_kernel(distance, mass, cutoff),
+        mass=mass,
+        cutoff=cutoff,
     )
 
 
@@ -527,14 +599,16 @@ def compute_branch_phase_matrix(
     *,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
 ) -> tuple[tuple[float, ...], ...]:
     if light_speed <= 0.0:
         raise ValueError("light_speed must be positive.")
-    if propagation not in {"instantaneous", "retarded", "time_symmetric", "causal_history"}:
-        raise ValueError("propagation must be 'instantaneous', 'retarded', 'time_symmetric', or 'causal_history'.")
+    if propagation not in {"instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"}:
+        raise ValueError(
+            "propagation must be 'instantaneous', 'retarded', 'time_symmetric', 'causal_history', or 'kg_retarded'."
+        )
     if quadrature_order <= 0:
         raise ValueError("quadrature_order must be positive.")
     return tuple(
@@ -696,7 +770,7 @@ def analyze_branch_pair_phase(
     *,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
 ) -> PairPhaseBreakdown:
@@ -753,7 +827,7 @@ def analyze_phase_decomposition(
     *,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
 ) -> PhaseDecompositionResult:
@@ -830,7 +904,7 @@ def compute_wavepacket_phase_matrix(
     widths_b: WidthSpec,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
     radial_quadrature_order: int = 5,
@@ -838,8 +912,10 @@ def compute_wavepacket_phase_matrix(
 ) -> tuple[tuple[float, ...], ...]:
     if light_speed <= 0.0:
         raise ValueError("light_speed must be positive.")
-    if propagation not in {"instantaneous", "retarded", "time_symmetric", "causal_history"}:
-        raise ValueError("propagation must be 'instantaneous', 'retarded', 'time_symmetric', or 'causal_history'.")
+    if propagation not in {"instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"}:
+        raise ValueError(
+            "propagation must be 'instantaneous', 'retarded', 'time_symmetric', 'causal_history', or 'kg_retarded'."
+        )
     widths_a_resolved = _resolve_widths(widths_a, len(branches_a))
     widths_b_resolved = _resolve_widths(widths_b, len(branches_b))
     return tuple(
@@ -850,6 +926,8 @@ def compute_wavepacket_phase_matrix(
                 propagation=propagation,
                 light_speed=light_speed,
                 quadrature_order=quadrature_order,
+                mass=mass,
+                cutoff=cutoff,
                 kernel=lambda distance, wa=widths_a_resolved[r], wb=widths_b_resolved[s]: _smeared_yukawa_kernel(
                     distance,
                     mass=mass,
@@ -873,7 +951,7 @@ def analyze_wavepacket_phase_decomposition(
     widths_b: WidthSpec,
     mass: float,
     cutoff: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
     light_speed: float = 1.0,
     quadrature_order: int = 3,
     radial_quadrature_order: int = 5,
@@ -889,6 +967,8 @@ def analyze_wavepacket_phase_decomposition(
             propagation=propagation,
             light_speed=light_speed,
             quadrature_order=quadrature_order,
+            mass=mass,
+            cutoff=cutoff,
             kernel=lambda distance, width=widths_a_resolved[index]: _smeared_yukawa_kernel(
                 distance,
                 mass=mass,
@@ -908,6 +988,8 @@ def analyze_wavepacket_phase_decomposition(
             propagation=propagation,
             light_speed=light_speed,
             quadrature_order=quadrature_order,
+            mass=mass,
+            cutoff=cutoff,
             kernel=lambda distance, width=widths_b_resolved[index]: _smeared_yukawa_kernel(
                 distance,
                 mass=mass,
@@ -989,7 +1071,7 @@ def simulate(
     cutoff: float = 1e-9,
     light_speed: float = 1.0,
     tolerance: float = 1e-9,
-    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history"] = "instantaneous",
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
     quadrature_order: int = 3,
 ) -> SimulationResult:
     closest_approach = inf

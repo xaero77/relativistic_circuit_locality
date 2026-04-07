@@ -29,6 +29,7 @@
 - 같은 시각 정적 상호작용만 보던 한계를 줄이기 위해 finite propagation speed 를 반영한 `retarded` 위상 적분 모드 추가
 - 한 방향 `retarded` 근사의 비대칭을 줄이기 위해 `A -> B`, `B -> A` light-cone contribution 을 평균하는 `time_symmetric` 전파 모드 추가
 - 단일 retarded point 대신 과거 light cone 전체를 적분하는 `causal_history` 전파 모드 추가
+- massive Klein-Gordon retarded Green function 의 light-cone shell 과 timelike tail 구조를 반영하는 `kg_retarded` 전파 모드 추가
 - 구간별 중점 근사 대신 `quadrature_order`로 조절 가능한 Gauss-Legendre quadrature 를 써서 piecewise linear worldline 위의 연속 시간 위상 적분 정밀도 개선
 - branch matrix 로부터 qudit 얽힘에 대응하는 상대 위상 `compute_entanglement_phase` 구현
 - branch pair 별 self-energy, 방향성 있는 cross-term, 대칭 interaction, total phase 를 분리해 주는 `analyze_branch_pair_phase` 구현
@@ -40,11 +41,12 @@
 - 두 계의 branch 조합 `(r, s)`마다 displacement profile 을 합성하는 `compute_branch_pair_displacements` 구현
 - displacement operator 합성에서 생기는 BCH 위상을 mode profile 로 계산하는 `compute_displacement_operator_phase` 구현
 - branch pair 가 만드는 field coherent state 의 자유 진화와 occupation number 를 추적하는 `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state` 구현
-- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded`/`time_symmetric`/`causal_history` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상, displacement/coherent-state 출력 지원
+- 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded`/`time_symmetric`/`causal_history`/`kg_retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상, displacement/coherent-state 출력 지원
 - `unittest` 기반 회귀 테스트 추가
 - 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
 - Fourier-space displacement/coherent-state 계산에 대한 회귀 테스트 추가
 - `causal_history`가 과거 source support 에 민감하고 past light cone overlap 이 없으면 0 이 되는지에 대한 회귀 테스트 추가
+- `kg_retarded`가 massless limit 에서 `retarded`와 일치하고, massive field 에서 tail history 에 민감한지에 대한 회귀 테스트 추가
 
 ## 현재 공개 API 요약
 
@@ -60,6 +62,7 @@
 - `retarded`: target 시각마다 source 의 단일 retarded point 를 찾아 적분한다.
 - `time_symmetric`: `A -> B`, `B -> A` retarded 기여를 평균해 방향성 비대칭을 줄인다.
 - `causal_history`: past light cone 내부의 source history 전체를 proper-time Yukawa kernel 로 적분한다.
+- `kg_retarded`: retarded shell `1/(4πr)`와 timelike tail `-m J1(mτ)/(4πτ)`를 함께 써서 massive Klein-Gordon retarded Green function 구조를 근사한다.
 
 ## 추가해야 할 기능
 
@@ -70,7 +73,7 @@
 
 ## 현재 구현의 한계
 
-- 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded`, `time_symmetric`, `causal_history` 전파 모드로 개선했다. 특히 `causal_history`는 single-source retarded Yukawa 대신 과거 light cone 내부의 source history 전체를 proper-time Yukawa kernel 로 적분한다. 다만 여전히 massive Klein-Gordon retarded Green function 자체를 직접 적분하는 완전한 `phi_rs` 계산기는 아니다.
+- 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded`, `time_symmetric`, `causal_history`, `kg_retarded` 전파 모드로 개선했다. 특히 `kg_retarded`는 massive Klein-Gordon retarded Green function 의 shell/tail 구조를 반영해 `phi_rs`를 더 직접적으로 근사한다. 다만 아직도 연속 4차원 source density 에 대한 완전한 retarded Green function 적분기라기보다, piecewise linear worldline 위에서 수치 적분하는 축약 모델이다.
 - 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature 로 개선했다. 다만 전체 4차원 장 방정식을 직접 푸는 적분기는 아니다.
 - self-energy 와 cross-term 분해는 추가했지만, 논문 식 (36)의 연속장 분해를 직접 푼 것이 아니라 현재 Yukawa 기반 수치 모델 위에서 해석한 것이다.
 - finite-width wavepacket 은 isotropic Gaussian profile 로 모델링했고, 3차원 상대 반경 분포에 대한 수치 적분으로 처리한다. 아직 일반적인 비등방/비가우시안 packet 은 지원하지 않는다.

@@ -14,6 +14,7 @@
 - on-shell scalar-field phase `theta_rs = -1/2 ∫ rho_rs phi_rs`의 준정적 Yukawa 근사
 - 한 방향 retarded 근사와 이를 대칭화한 time-symmetric light-cone 평균 모드
 - 과거 light cone 전체를 적분하는 causal-history 전파 모드
+- massive Klein-Gordon retarded Green function 의 shell/tail 구조를 반영하는 kg_retarded 모드
 - branch 조합 사이의 상대 얽힘 위상 계산
 - self-energy, directed cross-term, symmetric interaction, total phase 분해
 - isotropic Gaussian finite-width wavepacket 위상 계산
@@ -37,6 +38,7 @@
 - `retarded`: 단일 retarded source point 근사
 - `time_symmetric`: 양방향 retarded 평균
 - `causal_history`: past light cone 내부 source history 적분
+- `kg_retarded`: retarded shell 과 timelike tail 을 함께 적분하는 massive Klein-Gordon 근사
 
 ## 파일 구성
 
