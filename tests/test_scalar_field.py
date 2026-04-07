@@ -5,7 +5,9 @@ from math import asinh, pi
 
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
+    CompositeBranch,
     TrajectoryPoint,
+    analyze_branch_pair_coherent_overlap,
     analyze_branch_pair_coherent_state,
     analyze_branch_pair_phase,
     analyze_phase_decomposition,
@@ -13,11 +15,16 @@ from relativistic_circuit_locality.scalar_field import (
     compute_branch_displacement_amplitudes,
     compute_branch_phase_matrix,
     compute_branch_pair_displacements,
+    compute_composite_phase_matrix,
+    compute_continuum_displacement_amplitudes,
     compute_closest_approach,
     compute_displacement_operator_phase,
     compute_entanglement_phase,
+    compute_mediated_phase_matrix,
+    compute_phi_rs_samples,
     compute_sampled_spacetime_phase,
     compute_wavepacket_phase_matrix,
+    compare_coherent_states,
     evolve_coherent_state,
     field_mediation_intervals,
     is_field_mediated,
@@ -191,6 +198,13 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(samples), 2)
         self.assertGreater(samples[1].value, 0.0)
 
+    def test_phi_rs_samples_follow_target_worldline(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        samples = compute_phi_rs_samples(source, target, sample_count=3, mass=0.0, propagation="retarded")
+        self.assertEqual(samples[0].position, (1.0, 0.0, 0.0))
+        self.assertEqual(len(samples), 3)
+
     def test_sampled_spacetime_phase_matches_pointlike_limit_at_zero_width(self) -> None:
         left = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
         right = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
@@ -326,9 +340,21 @@ class ScalarFieldTests(unittest.TestCase):
             self.assertAlmostEqual(pair[0][0][index].real, displacement_left[0][index].real + displacement_right[0][index].real)
             self.assertAlmostEqual(pair[0][0][index].imag, displacement_left[0][index].imag + displacement_right[0][index].imag)
 
+    def test_continuum_displacement_amplitudes_are_nonzero_for_static_source(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        amplitudes = compute_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(amplitudes), 1)
+        self.assertNotEqual(amplitudes[0], 0.0j)
+
     def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
         profile = (1.0 + 2.0j, -0.5j)
         self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
+
+    def test_compare_coherent_states_returns_unit_overlap_for_identical_profiles(self) -> None:
+        profile = (1.0 + 0.5j, -0.25j)
+        comparison = compare_coherent_states(profile, profile)
+        self.assertAlmostEqual(comparison.vacuum_suppression, 1.0)
+        self.assertAlmostEqual(abs(comparison.overlap), 1.0)
 
     def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
         momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
@@ -351,6 +377,41 @@ class ScalarFieldTests(unittest.TestCase):
             elapsed_time=1.0,
         )
         self.assertAlmostEqual(coherent.occupation_number, sum(abs(value) ** 2 for value in pair[0][0]))
+
+    def test_branch_pair_coherent_overlap_detects_branch_difference(self) -> None:
+        left0 = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right0 = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        left1 = branch("A1", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        right1 = branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
+        comparison = analyze_branch_pair_coherent_overlap(
+            (left0, right0),
+            (left1, right1),
+            momenta,
+            field_mass=0.5,
+            source_width_a=0.2,
+            source_width_b=0.2,
+        )
+        self.assertLess(abs(comparison.overlap), 1.0)
+
+    def test_mediated_phase_matrix_supports_gravity_sign_convention(self) -> None:
+        left = branch("A0", -2.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 3.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        vector = compute_mediated_phase_matrix((left,), (right,), mass=0.5, mediator="vector", propagation="instantaneous")
+        gravity = compute_mediated_phase_matrix((left,), (right,), mass=0.5, mediator="gravity", propagation="instantaneous")
+        self.assertGreater(abs(gravity[0][0]), 0.0)
+        self.assertAlmostEqual(abs(gravity[0][0]), abs(vector[0][0]))
+        self.assertNotAlmostEqual(gravity[0][0], vector[0][0])
+
+    def test_composite_phase_matrix_sums_component_pairs(self) -> None:
+        a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        a1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        b0 = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        composite_left = CompositeBranch(label="L", components=(a0, a1))
+        composite_right = CompositeBranch(label="R", components=(b0,))
+        matrix = compute_composite_phase_matrix((composite_left,), (composite_right,), mass=0.5)
+        expected = compute_mediated_phase_matrix((a0,), (b0,), mass=0.5)[0][0] + compute_mediated_phase_matrix((a1,), (b0,), mass=0.5)[0][0]
+        self.assertAlmostEqual(matrix[0][0], expected)
 
 
 if __name__ == "__main__":

@@ -6,15 +6,21 @@ from .scalar_field import (
     BranchPath,
     TrajectoryPoint,
     analyze_branch_pair_coherent_state,
+    analyze_branch_pair_coherent_overlap,
     analyze_branch_pair_phase,
     compute_branch_displacement_amplitudes,
     compute_branch_pair_displacements,
+    compute_composite_phase_matrix,
+    compute_continuum_displacement_amplitudes,
     compute_displacement_operator_phase,
     compute_wavepacket_phase_matrix,
+    compute_mediated_phase_matrix,
+    compute_phi_rs_samples,
     compute_sampled_spacetime_phase,
     compute_entanglement_phase,
     sample_branch_field,
     simulate,
+    CompositeBranch,
 )
 
 
@@ -73,7 +79,15 @@ def main() -> None:
         mass=0.5,
         propagation="kg_retarded",
     )
+    phi_samples = compute_phi_rs_samples(
+        branches_a[0],
+        branches_b[0],
+        sample_count=4,
+        mass=0.5,
+        propagation="kg_retarded",
+    )
     print("sampled_field_A0 =", sampled_field)
+    print("phi_rs_samples_A0_B0 =", phi_samples)
     sampled_phase = compute_sampled_spacetime_phase(
         branches_a[0],
         branches_b[0],
@@ -100,8 +114,23 @@ def main() -> None:
     print("single_branch_displacements_A =", displacement_a)
     print("pair_displacements =", pair_displacements)
     print(
+        "continuum_displacements_A =",
+        compute_continuum_displacement_amplitudes(branches_a, field_mass=0.5, momentum_cutoff=1.0),
+    )
+    print(
         "pair_displacement_phase_A0B0_vs_A1B1 =",
         round(compute_displacement_operator_phase(pair_displacements[0][0], pair_displacements[1][1]), 6),
+    )
+    print(
+        "pair_coherent_overlap_A0B0_vs_A1B1 =",
+        analyze_branch_pair_coherent_overlap(
+            (branches_a[0], branches_b[0]),
+            (branches_a[1], branches_b[1]),
+            momenta,
+            field_mass=0.5,
+            source_width_a=0.2,
+            source_width_b=0.2,
+        ),
     )
     coherent_state = analyze_branch_pair_coherent_state(
         branches_a[0],
@@ -113,6 +142,18 @@ def main() -> None:
         elapsed_time=1.5,
     )
     print("coherent_state_A0_B0 =", coherent_state)
+    print(
+        "gravity_phase_matrix =",
+        compute_mediated_phase_matrix(branches_a, branches_b, mass=0.5, mediator="gravity"),
+    )
+    print(
+        "composite_phase_matrix =",
+        compute_composite_phase_matrix(
+            (CompositeBranch("A", branches_a),),
+            (CompositeBranch("B", branches_b),),
+            mass=0.5,
+        ),
+    )
     wavepacket_matrix = compute_wavepacket_phase_matrix(
         branches_a,
         branches_b,

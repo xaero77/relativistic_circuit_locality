@@ -122,6 +122,24 @@ class FieldSample:
     value: float
 
 
+@dataclass(frozen=True)
+class CoherentStateComparison:
+    overlap: complex
+    vacuum_suppression: float
+    relative_phase: float
+    norm_distance: float
+
+
+@dataclass(frozen=True)
+class CompositeBranch:
+    label: str
+    components: tuple[BranchPath, ...]
+
+    def __post_init__(self) -> None:
+        if not self.components:
+            raise ValueError("CompositeBranch needs at least one component.")
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -466,6 +484,12 @@ def _field_value_at_observation_point(
         quadrature_order=quadrature_order,
         proper_time_cutoff=cutoff,
     )
+
+
+def _mediator_pair_coupling(branch_a: BranchPath, branch_b: BranchPath, mediator: Literal["scalar", "vector", "gravity"]) -> float:
+    if mediator == "gravity":
+        return abs(branch_a.charge) * abs(branch_b.charge)
+    return branch_a.charge * branch_b.charge
 
 
 def _pair_phase_integral(
@@ -841,6 +865,38 @@ def compute_sampled_spacetime_phase(
     return phase
 
 
+def compute_phi_rs_samples(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    sample_count: int = 5,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> tuple[FieldSample, ...]:
+    if sample_count < 2:
+        raise ValueError("sample_count must be at least 2.")
+    start, stop = _overlap_window(source, target)
+    samples = tuple(
+        (
+            start + (stop - start) * index / (sample_count - 1),
+            target.position_at(start + (stop - start) * index / (sample_count - 1)),
+        )
+        for index in range(sample_count)
+    )
+    return sample_branch_field(
+        source,
+        samples,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+
+
 def compute_branch_displacement_amplitudes(
     branches: tuple[BranchPath, ...],
     momenta: tuple[Vector3, ...],
@@ -914,6 +970,44 @@ def compute_branch_pair_displacements(
     )
 
 
+def compute_continuum_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    radial_quadrature_order: int = 5,
+    angular_directions: tuple[Vector3, ...] = _AXIS_DIRECTIONS,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> tuple[complex, ...]:
+    if momentum_cutoff <= 0.0:
+        raise ValueError("momentum_cutoff must be positive.")
+    radial_nodes, radial_weights = _gauss_legendre_rule(radial_quadrature_order)
+    amplitudes: list[complex] = []
+    for branch in branches:
+        total = 0.0j
+        midpoint = momentum_cutoff / 2.0
+        half_width = momentum_cutoff / 2.0
+        for radial_node, radial_weight in zip(radial_nodes, radial_weights):
+            momentum_radius = midpoint + half_width * radial_node
+            angular_total = 0.0j
+            for direction in angular_directions:
+                momentum = _scale(direction, momentum_radius)
+                omega = _mode_energy(momentum, field_mass)
+                angular_total += (-1j / sqrt(2.0 * omega)) * _branch_time_integral(
+                    branch,
+                    lambda sample_time, mode=momentum, frequency=omega: (
+                        complex_exp(1j * frequency * sample_time)
+                        * _source_form_factor(branch, mode, sample_time, source_width)
+                    ),
+                    quadrature_order=time_quadrature_order,
+                )
+            angular_average = angular_total / len(angular_directions)
+            total += radial_weight * (momentum_radius * momentum_radius) * angular_average
+        amplitudes.append(4.0 * pi * total * half_width)
+    return tuple(amplitudes)
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -922,6 +1016,24 @@ def compute_displacement_operator_phase(
         raise ValueError("Displacement profiles must have the same number of momentum modes.")
     commutator = sum(alpha * beta.conjugate() - alpha.conjugate() * beta for alpha, beta in zip(left, right))
     return 0.5 * commutator.imag
+
+
+def compare_coherent_states(
+    left: tuple[complex, ...],
+    right: tuple[complex, ...],
+) -> CoherentStateComparison:
+    if len(left) != len(right):
+        raise ValueError("Coherent-state profiles must have the same number of modes.")
+    difference_norm_sq = sum(abs(alpha - beta) ** 2 for alpha, beta in zip(left, right))
+    vacuum_suppression = exp(-0.5 * difference_norm_sq)
+    relative_phase = compute_displacement_operator_phase(left, right)
+    overlap = vacuum_suppression * complex_exp(1j * relative_phase)
+    return CoherentStateComparison(
+        overlap=overlap,
+        vacuum_suppression=vacuum_suppression,
+        relative_phase=relative_phase,
+        norm_distance=sqrt(difference_norm_sq),
+    )
 
 
 def evolve_coherent_state(
@@ -975,6 +1087,40 @@ def analyze_branch_pair_coherent_state(
         field_mass=field_mass,
         elapsed_time=elapsed_time,
     )
+
+
+def analyze_branch_pair_coherent_overlap(
+    left_pair: tuple[BranchPath, BranchPath],
+    right_pair: tuple[BranchPath, BranchPath],
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+    source_width_a: float = 0.0,
+    source_width_b: float = 0.0,
+    quadrature_order: int = 3,
+    observation_time: float | None = None,
+) -> CoherentStateComparison:
+    left = compute_branch_pair_displacements(
+        (left_pair[0],),
+        (left_pair[1],),
+        momenta,
+        field_mass=field_mass,
+        source_width_a=source_width_a,
+        source_width_b=source_width_b,
+        quadrature_order=quadrature_order,
+        observation_time=observation_time,
+    )[0][0]
+    right = compute_branch_pair_displacements(
+        (right_pair[0],),
+        (right_pair[1],),
+        momenta,
+        field_mass=field_mass,
+        source_width_a=source_width_a,
+        source_width_b=source_width_b,
+        quadrature_order=quadrature_order,
+        observation_time=observation_time,
+    )[0][0]
+    return compare_coherent_states(left, right)
 
 
 def analyze_branch_pair_phase(
@@ -1107,6 +1253,74 @@ def analyze_phase_decomposition(
         interaction_matrix=interaction_matrix,
         total_matrix=total_matrix,
     )
+
+
+def compute_mediated_phase_matrix(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> tuple[tuple[float, ...], ...]:
+    base = compute_branch_phase_matrix(
+        branches_a,
+        branches_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    return tuple(
+        tuple(
+            (
+                base[r][s]
+                if mediator in {"scalar", "vector"}
+                else -base[r][s]
+                if branches_a[r].charge * branches_b[s].charge < 0.0
+                else base[r][s]
+            )
+            for s in range(len(branches_b))
+        )
+        for r in range(len(branches_a))
+    )
+
+
+def compute_composite_phase_matrix(
+    branches_a: tuple[CompositeBranch, ...],
+    branches_b: tuple[CompositeBranch, ...],
+    *,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> tuple[tuple[float, ...], ...]:
+    matrix: list[tuple[float, ...]] = []
+    for left in branches_a:
+        row: list[float] = []
+        for right in branches_b:
+            total = 0.0
+            for component_left in left.components:
+                for component_right in right.components:
+                    total += compute_mediated_phase_matrix(
+                        (component_left,),
+                        (component_right,),
+                        mass=mass,
+                        mediator=mediator,
+                        cutoff=cutoff,
+                        propagation=propagation,
+                        light_speed=light_speed,
+                        quadrature_order=quadrature_order,
+                    )[0][0]
+            row.append(total)
+        matrix.append(tuple(row))
+    return tuple(matrix)
 
 
 def compute_wavepacket_phase_matrix(
