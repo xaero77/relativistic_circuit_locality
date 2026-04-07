@@ -274,6 +274,36 @@ class NonlinearBackreactionResult:
     max_update_norm: float
 
 
+@dataclass(frozen=True)
+class DynamicBoundaryLatticeResult:
+    slices: tuple[SpectralLatticeResult, ...]
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...]
+
+
+@dataclass(frozen=True)
+class SpectralConvergenceResult:
+    amplitudes: tuple[complex, ...]
+    successive_differences: tuple[float, ...]
+    mode_counts: tuple[int, ...]
+    converged: bool
+
+
+@dataclass(frozen=True)
+class AnalyticIdentityResult:
+    labels: tuple[str, ...]
+    phase_antisymmetry_error: float
+    norm_consistency_error: float
+
+
+@dataclass(frozen=True)
+class SelfConsistentBackreactionResult:
+    source: BranchPath
+    target: BranchPath
+    iterations: int
+    converged: bool
+    residual: float
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -1459,6 +1489,53 @@ def estimate_spectral_continuum_error_bound(
     )
 
 
+def estimate_spectral_convergence(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    tolerance: float = 1e-6,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> SpectralConvergenceResult:
+    angular_levels = (
+        _AXIS_DIRECTIONS,
+        _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS,
+        _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS + _EDGE_DIRECTIONS,
+    )
+    previous: tuple[complex, ...] | None = None
+    current: tuple[complex, ...] | None = None
+    successive_differences: list[float] = []
+    mode_counts: list[int] = []
+    converged = False
+    for level_index, directions in enumerate(angular_levels):
+        current = compute_continuum_displacement_amplitudes(
+            branches,
+            field_mass=field_mass,
+            momentum_cutoff=momentum_cutoff,
+            radial_quadrature_order=2 + level_index,
+            angular_directions=directions,
+            source_width=source_width,
+            time_quadrature_order=time_quadrature_order,
+        )
+        mode_counts.append(len(directions))
+        if previous is not None:
+            difference = max(abs(left - right) for left, right in zip(current, previous))
+            successive_differences.append(difference)
+            if difference <= tolerance:
+                converged = True
+                break
+        previous = current
+    if current is None:
+        raise ValueError("Spectral convergence estimation failed to initialize.")
+    return SpectralConvergenceResult(
+        amplitudes=current,
+        successive_differences=tuple(successive_differences),
+        mode_counts=tuple(mode_counts),
+        converged=converged,
+    )
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1642,6 +1719,31 @@ def summarize_symbolic_multimode_bookkeeping(
         labels=labels,
         relative_phase_matrix=tomography.relative_phase_matrix,
         amplitude_norms=amplitude_norms,
+    )
+
+
+def verify_multimode_analytic_identities(
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+) -> AnalyticIdentityResult:
+    bookkeeping = summarize_symbolic_multimode_bookkeeping(labeled_mode_samples)
+    antisymmetry_error = 0.0
+    for row in range(len(bookkeeping.labels)):
+        antisymmetry_error = max(antisymmetry_error, abs(bookkeeping.relative_phase_matrix[row][row]))
+        for column in range(row):
+            antisymmetry_error = max(
+                antisymmetry_error,
+                abs(bookkeeping.relative_phase_matrix[row][column] + bookkeeping.relative_phase_matrix[column][row]),
+            )
+    norm_consistency_error = 0.0
+    amplitude_norms = bookkeeping.amplitude_norms
+    for index, (_, samples) in enumerate(labeled_mode_samples):
+        if samples:
+            mean_norm = sum(_sample_norm(sample) for sample in samples) / len(samples)
+            norm_consistency_error = max(norm_consistency_error, abs(mean_norm - amplitude_norms[index]))
+    return AnalyticIdentityResult(
+        labels=bookkeeping.labels,
+        phase_antisymmetry_error=antisymmetry_error,
+        norm_consistency_error=norm_consistency_error,
     )
 
 
@@ -2143,6 +2245,39 @@ def solve_spectral_lattice(
     )
 
 
+def solve_dynamic_boundary_lattice(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...],
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> DynamicBoundaryLatticeResult:
+    if len(boundary_schedule) != len(time_slices):
+        raise ValueError("boundary_schedule must match time_slices length.")
+    slices = tuple(
+        solve_spectral_lattice(
+            source,
+            time_slices=(time_value,),
+            spatial_points=spatial_points,
+            mass=mass,
+            mediator=mediator,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            boundary_condition=boundary_condition,
+        )
+        for time_value, boundary_condition in zip(time_slices, boundary_schedule)
+    )
+    return DynamicBoundaryLatticeResult(slices=slices, boundary_schedule=boundary_schedule)
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -2316,6 +2451,66 @@ def solve_nonlinear_backreaction(
         target=current_target,
         iterations=iterations,
         max_update_norm=max_update_norm,
+    )
+
+
+def solve_self_consistent_backreaction(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    max_iterations: int,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.25,
+    tolerance: float = 1e-6,
+) -> SelfConsistentBackreactionResult:
+    if max_iterations <= 0:
+        raise ValueError("max_iterations must be positive.")
+    current_source = source
+    current_target = target
+    residual = inf
+    converged = False
+    iterations = 0
+    for step in range(max_iterations):
+        updated = solve_nonlinear_backreaction(
+            current_source,
+            current_target,
+            iterations=1,
+            mass=mass,
+            mediator=mediator,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            response_strength=response_strength,
+            nonlinearity=nonlinearity,
+        )
+        source_residual = max(
+            _norm(_sub(new.position, old.position))
+            for new, old in zip(updated.source.points, current_source.points)
+        )
+        target_residual = max(
+            _norm(_sub(new.position, old.position))
+            for new, old in zip(updated.target.points, current_target.points)
+        )
+        residual = max(source_residual, target_residual)
+        current_source = updated.source
+        current_target = updated.target
+        iterations = step + 1
+        if residual <= tolerance:
+            converged = True
+            break
+    return SelfConsistentBackreactionResult(
+        source=current_source,
+        target=current_target,
+        iterations=iterations,
+        converged=converged,
+        residual=residual,
     )
 
 
