@@ -192,7 +192,7 @@
 ### 물리 모델 한계
 
 - ~~microcausality 판정이 자명~~ → `evaluate_microcausality_commutator`가 branch segment 쌍에 대해 Pauli-Jordan commutator 를 Gauss-Legendre 이중 적분으로 평가한다. massive Klein-Gordon tail `-m J1(mτ)/(4πτ)`와 수치적으로 regularized 한 light-cone shell 을 함께 반영하므로, 단순 0/1 판정 대신 spacelike support 에서는 0, timelike/null support 에서는 비영 commutator norm 을 반환한다.
-- **텐서 구조 근사 수준**: `compute_tensor_mediated_phase_matrix`가 velocity-dependent coupling 보정을 제공하지만, 완전한 spin-1/spin-2 propagator tensor 구조가 아닌 leading-order 보정이다.
+- ~~텐서 구조 근사 수준~~ → `compute_tensor_mediated_phase_matrix`가 branch 분리 방향에 대한 transverse/longitudinal projector 를 구성해 vector current-current contraction 을 평가하고, gravity 채널에는 같은 projector 위의 traceless spatial stress contraction 을 추가한다. 따라서 단순 `1 ± v_a·v_b/c²` 평균 보정이 아니라, 평행/수직 운동 방향과 massive mediator 의 longitudinal weight 를 구분하는 spin-1/spin-2 surrogate tensor 구조를 반영한다. 완전한 비국소 게이지 고정 propagator 와 전체 4D vertex 재합산은 아직 지원하지 않는다.
 - **유한차분 PDE solver**: `solve_finite_difference_kg`가 1+1D leapfrog 을 구현하지만 3+1D 완전 시뮬레이션이 아닌 surrogate 수준이다.
 - **decoherence 모델 단순화**: `compute_decoherence_model`은 coherent-state overlap 기반으로 환경 결합을 포함하지만, 열적 환경이나 일반적 Lindblad 방정식을 풀지 않는다.
 

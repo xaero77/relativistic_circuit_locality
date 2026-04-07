@@ -1145,6 +1145,32 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertNotAlmostEqual(massless.vector_phase[0][0], massive.vector_phase[0][0])
 
+    def test_tensor_mediated_vector_projector_distinguishes_motion_direction(self) -> None:
+        source_parallel = branch("A_parallel", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target_parallel = branch("B_parallel", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (3.0, 0.0, 0.0))])
+        source_transverse = branch("A_transverse", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 1.0, 0.0))])
+        target_transverse = branch("B_transverse", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 1.0, 0.0))])
+        parallel = compute_tensor_mediated_phase_matrix(
+            (source_parallel,), (target_parallel,), mass=0.5, propagation="instantaneous", mediator_mass=0.0,
+        )
+        transverse = compute_tensor_mediated_phase_matrix(
+            (source_transverse,), (target_transverse,), mass=0.5, propagation="instantaneous", mediator_mass=0.0,
+        )
+        self.assertNotAlmostEqual(parallel.vector_phase[0][0], transverse.vector_phase[0][0])
+
+    def test_tensor_mediated_gravity_projector_distinguishes_motion_direction(self) -> None:
+        source_parallel = branch("A_parallel", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target_parallel = branch("B_parallel", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (3.0, 0.0, 0.0))])
+        source_transverse = branch("A_transverse", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 1.0, 0.0))])
+        target_transverse = branch("B_transverse", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 1.0, 0.0))])
+        parallel = compute_tensor_mediated_phase_matrix(
+            (source_parallel,), (target_parallel,), mass=0.5, propagation="instantaneous", mediator_mass=0.0,
+        )
+        transverse = compute_tensor_mediated_phase_matrix(
+            (source_transverse,), (target_transverse,), mass=0.5, propagation="instantaneous", mediator_mass=0.0,
+        )
+        self.assertNotAlmostEqual(parallel.gravity_phase[0][0], transverse.gravity_phase[0][0])
+
     def test_renormalized_phase_matrix_subtracts_self_energy(self) -> None:
         source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
         target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])

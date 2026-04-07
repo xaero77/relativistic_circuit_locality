@@ -4401,18 +4401,132 @@ def _lorentz_factor(velocity: Vector3, light_speed: float) -> float:
     return 1.0 / sqrt(1.0 - beta_sq)
 
 
-def _vector_polarization_factor(
-    v_a: Vector3, v_b: Vector3, *, light_speed: float,
+def _unit_vector(vector: Vector3, *, tolerance: float = 1e-12) -> Vector3:
+    magnitude = _norm(vector)
+    if magnitude <= tolerance:
+        return (0.0, 0.0, 0.0)
+    return _scale(vector, 1.0 / magnitude)
+
+
+def _transverse_projector(
+    direction: Vector3,
+    *,
+    longitudinal_weight: float,
+) -> tuple[tuple[float, float, float], ...]:
+    clamped_weight = min(max(longitudinal_weight, 0.0), 1.0)
+    unit_direction = _unit_vector(direction)
+    identity = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    if unit_direction == (0.0, 0.0, 0.0):
+        return identity
+    return tuple(
+        tuple(
+            identity[i][j] - (1.0 - clamped_weight) * unit_direction[i] * unit_direction[j]
+            for j in range(3)
+        )
+        for i in range(3)
+    )
+
+
+def _matrix_vector_multiply(
+    matrix: tuple[tuple[float, float, float], ...],
+    vector: Vector3,
+) -> Vector3:
+    return tuple(
+        sum(matrix[i][j] * vector[j] for j in range(3))
+        for i in range(3)
+    )
+
+
+def _matrix_multiply(
+    left: tuple[tuple[float, float, float], ...],
+    right: tuple[tuple[float, float, float], ...],
+) -> tuple[tuple[float, float, float], ...]:
+    return tuple(
+        tuple(
+            sum(left[i][k] * right[k][j] for k in range(3))
+            for j in range(3)
+        )
+        for i in range(3)
+    )
+
+
+def _matrix_trace(matrix: tuple[tuple[float, float, float], ...]) -> float:
+    return sum(matrix[i][i] for i in range(3))
+
+
+def _matrix_double_contract(
+    left: tuple[tuple[float, float, float], ...],
+    right: tuple[tuple[float, float, float], ...],
 ) -> float:
-    """spin-1 매개자의 velocity-dependent coupling 보정 (1 - v_a·v_b/c²)."""
-    return 1.0 - _dot(v_a, v_b) / (light_speed * light_speed)
+    return sum(left[i][j] * right[i][j] for i in range(3) for j in range(3))
+
+
+def _outer_product(a: Vector3, b: Vector3) -> tuple[tuple[float, float, float], ...]:
+    return tuple(
+        tuple(a[i] * b[j] for j in range(3))
+        for i in range(3)
+    )
+
+
+def _longitudinal_projector_weight(distance: float, mediator_mass: float) -> float:
+    if mediator_mass <= 0.0:
+        return 0.0
+    scale = mediator_mass * max(distance, 1e-12)
+    return (scale * scale) / (1.0 + scale * scale)
+
+
+def _vector_polarization_factor(
+    v_a: Vector3,
+    v_b: Vector3,
+    separation: Vector3,
+    *,
+    light_speed: float,
+    mediator_mass: float,
+) -> float:
+    """spin-1 current-current contraction을 transverse/longitudinal projector와 함께 근사한다."""
+    gamma_a = _lorentz_factor(v_a, light_speed)
+    gamma_b = _lorentz_factor(v_b, light_speed)
+    beta_a = _scale(v_a, 1.0 / light_speed)
+    beta_b = _scale(v_b, 1.0 / light_speed)
+    projector = _transverse_projector(
+        separation,
+        longitudinal_weight=_longitudinal_projector_weight(_norm(separation), mediator_mass),
+    )
+    spatial_term = _dot(beta_a, _matrix_vector_multiply(projector, beta_b))
+    return max(gamma_a * gamma_b - gamma_a * gamma_b * spatial_term, 0.0)
 
 
 def _graviton_tensor_factor(
-    v_a: Vector3, v_b: Vector3, *, light_speed: float,
+    v_a: Vector3,
+    v_b: Vector3,
+    separation: Vector3,
+    *,
+    light_speed: float,
+    mediator_mass: float,
 ) -> float:
-    """spin-2 매개자의 velocity-dependent coupling 보정 (1 + v_a·v_b/c²)."""
-    return 1.0 + _dot(v_a, v_b) / (light_speed * light_speed)
+    """spin-2 exchange를 traceless stress projector contraction으로 근사한다."""
+    gamma_a = _lorentz_factor(v_a, light_speed)
+    gamma_b = _lorentz_factor(v_b, light_speed)
+    beta_a = _scale(v_a, 1.0 / light_speed)
+    beta_b = _scale(v_b, 1.0 / light_speed)
+    projector = _transverse_projector(
+        separation,
+        longitudinal_weight=_longitudinal_projector_weight(_norm(separation), mediator_mass),
+    )
+    transverse_a = _matrix_vector_multiply(projector, beta_a)
+    transverse_b = _matrix_vector_multiply(projector, beta_b)
+    stress_a = _matrix_multiply(_matrix_multiply(projector, _outer_product(beta_a, beta_a)), projector)
+    stress_b = _matrix_multiply(_matrix_multiply(projector, _outer_product(beta_b, beta_b)), projector)
+    trace_a = _matrix_trace(stress_a)
+    trace_b = _matrix_trace(stress_b)
+    traceless_contraction = _matrix_double_contract(stress_a, stress_b) - 0.5 * trace_a * trace_b
+    energy_term = (gamma_a * gamma_b) ** 2
+    momentum_term = 2.0 * gamma_a * gamma_b * _dot(transverse_a, transverse_b)
+    return max(energy_term + momentum_term + traceless_contraction, 0.0)
 
 
 def compute_proper_time_worldline(
@@ -4459,39 +4573,36 @@ def _tensor_mediated_pair_phase(
             sample_time = midpoint + half_width * node
             v_a = _velocity_at(branch_a, sample_time)
             v_b = _velocity_at(branch_b, sample_time)
+            position_a = branch_a.position_at(sample_time)
+            position_b = branch_b.position_at(sample_time)
+            separation = _sub(position_b, position_a)
             if mediator == "vector":
-                tensor_factor = _vector_polarization_factor(v_a, v_b, light_speed=light_speed)
-                coupling = -branch_a.charge * branch_b.charge
+                tensor_factor = _vector_polarization_factor(
+                    v_a, v_b, separation,
+                    light_speed=light_speed,
+                    mediator_mass=mass,
+                )
+                phase_sign = -1.0
                 effective_mass = mass
             elif mediator == "gravity":
-                tensor_factor = _graviton_tensor_factor(v_a, v_b, light_speed=light_speed)
-                coupling = abs(branch_a.charge) * abs(branch_b.charge)
+                tensor_factor = _graviton_tensor_factor(
+                    v_a, v_b, separation,
+                    light_speed=light_speed,
+                    mediator_mass=mass,
+                )
+                phase_sign = 1.0
                 effective_mass = mass
             else:
                 tensor_factor = 1.0
-                coupling = branch_a.charge * branch_b.charge
+                phase_sign = 1.0
                 effective_mass = mass
             field_val = _field_value_at_observation_point(
-                branch_a, sample_time, branch_b.position_at(sample_time),
+                branch_a, sample_time, position_b,
                 mass=effective_mass, cutoff=cutoff, propagation=propagation,
                 light_speed=light_speed, quadrature_order=quadrature_order,
             )
             segment += weight * tensor_factor * field_val
-        phase -= _mediator_pair_coupling(branch_a, branch_b, mediator) * segment * half_width
-        # tensor_factor 보정을 적용한다.
-        phase_correction = 0.0
-        for node, weight in zip(nodes, weights):
-            sample_time = midpoint + half_width * node
-            v_a = _velocity_at(branch_a, sample_time)
-            v_b = _velocity_at(branch_b, sample_time)
-            if mediator == "vector":
-                correction = _vector_polarization_factor(v_a, v_b, light_speed=light_speed) - 1.0
-            elif mediator == "gravity":
-                correction = _graviton_tensor_factor(v_a, v_b, light_speed=light_speed) - 1.0
-            else:
-                correction = 0.0
-            phase_correction += weight * correction
-        phase *= (1.0 + phase_correction * half_width / max(half_width * len(nodes), 1e-12))
+        phase -= phase_sign * _mediator_pair_coupling(branch_a, branch_b, mediator) * segment * half_width
     return phase
 
 
@@ -4518,67 +4629,39 @@ def compute_tensor_mediated_phase_matrix(
         quadrature_order=quadrature_order,
     )
 
-    # 벡터: spin-1 편광 텐서 보정 포함
-    vector_rows: list[tuple[float, ...]] = []
-    for r, branch_a in enumerate(branches_a):
-        row: list[float] = []
-        for s, branch_b in enumerate(branches_b):
-            base = _branch_pair_phase(
-                branch_a, branch_b,
-                mass=effective_vector_mass, cutoff=cutoff,
-                propagation=propagation, light_speed=light_speed,
+    vector_phase = tuple(
+        tuple(
+            _tensor_mediated_pair_phase(
+                branch_a,
+                branch_b,
+                mediator="vector",
+                mass=effective_vector_mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
                 quadrature_order=quadrature_order,
             )
-            grid = _shared_time_grid(branch_a, branch_b)
-            nodes, weights = _gauss_legendre_rule(quadrature_order)
-            total_correction = 0.0
-            total_weight = 0.0
-            for t_start, t_stop in zip(grid, grid[1:]):
-                midpoint = (t_start + t_stop) / 2.0
-                half_width = (t_stop - t_start) / 2.0
-                for node, weight in zip(nodes, weights):
-                    sample_time = midpoint + half_width * node
-                    v_a = _velocity_at(branch_a, sample_time)
-                    v_b = _velocity_at(branch_b, sample_time)
-                    factor = _vector_polarization_factor(v_a, v_b, light_speed=light_speed)
-                    total_correction += weight * factor * half_width
-                    total_weight += weight * half_width
-            avg_factor = total_correction / max(total_weight, 1e-12)
-            row.append(-base * avg_factor)
-        vector_rows.append(tuple(row))
-    vector_phase = tuple(vector_rows)
+            for branch_b in branches_b
+        )
+        for branch_a in branches_a
+    )
 
-    # 중력: spin-2 텐서 보정 포함
-    gravity_rows: list[tuple[float, ...]] = []
-    for r, branch_a in enumerate(branches_a):
-        row_g: list[float] = []
-        for s, branch_b in enumerate(branches_b):
-            base = _branch_pair_phase(
-                branch_a, branch_b,
-                mass=effective_gravity_mass, cutoff=cutoff,
-                propagation=propagation, light_speed=light_speed,
+    gravity_phase = tuple(
+        tuple(
+            _tensor_mediated_pair_phase(
+                branch_a,
+                branch_b,
+                mediator="gravity",
+                mass=effective_gravity_mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
                 quadrature_order=quadrature_order,
             )
-            # gravity coupling uses |charge|
-            charge_ratio = (abs(branch_a.charge) * abs(branch_b.charge)) / max(abs(branch_a.charge * branch_b.charge), 1e-12)
-            grid = _shared_time_grid(branch_a, branch_b)
-            nodes, weights = _gauss_legendre_rule(quadrature_order)
-            total_correction = 0.0
-            total_weight = 0.0
-            for t_start, t_stop in zip(grid, grid[1:]):
-                midpoint = (t_start + t_stop) / 2.0
-                half_width = (t_stop - t_start) / 2.0
-                for node, weight in zip(nodes, weights):
-                    sample_time = midpoint + half_width * node
-                    v_a = _velocity_at(branch_a, sample_time)
-                    v_b = _velocity_at(branch_b, sample_time)
-                    factor = _graviton_tensor_factor(v_a, v_b, light_speed=light_speed)
-                    total_correction += weight * factor * half_width
-                    total_weight += weight * half_width
-            avg_factor = total_correction / max(total_weight, 1e-12)
-            row_g.append(base * charge_ratio * avg_factor)
-        gravity_rows.append(tuple(row_g))
-    gravity_phase = tuple(gravity_rows)
+            for branch_b in branches_b
+        )
+        for branch_a in branches_a
+    )
 
     return TensorMediatedPhaseResult(
         scalar_phase=scalar_phase,
