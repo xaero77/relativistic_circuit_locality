@@ -41,6 +41,17 @@ _AXIS_DIRECTIONS: tuple[Vector3, ...] = (
     (0.0, 0.0, -1.0),
 )
 
+_DIAGONAL_DIRECTIONS: tuple[Vector3, ...] = (
+    (1.0 / sqrt(3.0), 1.0 / sqrt(3.0), 1.0 / sqrt(3.0)),
+    (-1.0 / sqrt(3.0), 1.0 / sqrt(3.0), 1.0 / sqrt(3.0)),
+    (1.0 / sqrt(3.0), -1.0 / sqrt(3.0), 1.0 / sqrt(3.0)),
+    (1.0 / sqrt(3.0), 1.0 / sqrt(3.0), -1.0 / sqrt(3.0)),
+    (-1.0 / sqrt(3.0), -1.0 / sqrt(3.0), 1.0 / sqrt(3.0)),
+    (-1.0 / sqrt(3.0), 1.0 / sqrt(3.0), -1.0 / sqrt(3.0)),
+    (1.0 / sqrt(3.0), -1.0 / sqrt(3.0), -1.0 / sqrt(3.0)),
+    (-1.0 / sqrt(3.0), -1.0 / sqrt(3.0), -1.0 / sqrt(3.0)),
+)
+
 
 @dataclass(frozen=True)
 class TrajectoryPoint:
@@ -138,6 +149,22 @@ class CompositeBranch:
     def __post_init__(self) -> None:
         if not self.components:
             raise ValueError("CompositeBranch needs at least one component.")
+
+
+@dataclass(frozen=True)
+class GaussianModeState:
+    displacement: tuple[complex, ...]
+    covariance_diag: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class ModeSuperpositionState:
+    weights: tuple[complex, ...]
+    components: tuple[tuple[complex, ...], ...]
+
+    def __post_init__(self) -> None:
+        if len(self.weights) != len(self.components):
+            raise ValueError("weights and components must have the same length.")
 
 
 WidthSpec = float | tuple[float, ...]
@@ -486,6 +513,37 @@ def _field_value_at_observation_point(
     )
 
 
+def _mediator_field_value(
+    source: BranchPath,
+    observation_time: float,
+    observation_position: Vector3,
+    *,
+    mass: float,
+    cutoff: float,
+    mediator: Literal["scalar", "vector", "gravity"],
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
+    light_speed: float,
+    quadrature_order: int,
+) -> float:
+    effective_source = source
+    if mediator == "gravity":
+        effective_source = BranchPath(
+            label=f"{source.label}_gravity",
+            charge=abs(source.charge),
+            points=source.points,
+        )
+    return _field_value_at_observation_point(
+        effective_source,
+        observation_time,
+        observation_position,
+        mass=0.0 if mediator in {"vector", "gravity"} else mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+
+
 def _mediator_pair_coupling(branch_a: BranchPath, branch_b: BranchPath, mediator: Literal["scalar", "vector", "gravity"]) -> float:
     if mediator == "gravity":
         return abs(branch_a.charge) * abs(branch_b.charge)
@@ -734,6 +792,49 @@ def _gaussian_shell_average(
     return total / len(_AXIS_DIRECTIONS)
 
 
+def _anisotropic_shell_average(
+    source: BranchPath,
+    sample_time: float,
+    center: Vector3,
+    *,
+    widths: Vector3,
+    mass: float,
+    cutoff: float,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
+    light_speed: float,
+    quadrature_order: int,
+) -> float:
+    total = 0.0
+    count = 0
+    for axis, width in zip(_AXIS_DIRECTIONS[::2], widths):
+        if width <= 0.0:
+            total += _field_value_at_observation_point(
+                source,
+                sample_time,
+                center,
+                mass=mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            count += 1
+            continue
+        for direction in (axis, _scale(axis, -1.0)):
+            total += _field_value_at_observation_point(
+                source,
+                sample_time,
+                _add(center, _scale(direction, width)),
+                mass=mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            count += 1
+    return total / count
+
+
 def compute_branch_phase_matrix(
     branches_a: tuple[BranchPath, ...],
     branches_b: tuple[BranchPath, ...],
@@ -862,6 +963,54 @@ def compute_sampled_spacetime_phase(
                 radial_total += radial_segment * radial_half_width
             time_segment += time_weight * radial_total
         phase -= source.charge * target.charge * time_segment * time_half_width
+    return phase
+
+
+def compute_anisotropic_sampled_spacetime_phase(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    mass: float,
+    target_widths: Vector3,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> float:
+    if any(width < 0.0 for width in target_widths):
+        raise ValueError("target_widths must be non-negative.")
+    if target_widths == (0.0, 0.0, 0.0):
+        return _branch_pair_phase(
+            source,
+            target,
+            mass=mass,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+    grid = _shared_time_grid(source, target)
+    nodes, weights = _gauss_legendre_rule(quadrature_order)
+    phase = 0.0
+    for t_start, t_stop in zip(grid, grid[1:]):
+        midpoint = (t_start + t_stop) / 2.0
+        half_width = (t_stop - t_start) / 2.0
+        segment = 0.0
+        for node, weight in zip(nodes, weights):
+            sample_time = midpoint + half_width * node
+            center = target.position_at(sample_time)
+            segment += weight * _anisotropic_shell_average(
+                source,
+                sample_time,
+                center,
+                widths=target_widths,
+                mass=mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+        phase -= source.charge * target.charge * segment * half_width
     return phase
 
 
@@ -1008,6 +1157,36 @@ def compute_continuum_displacement_amplitudes(
     return tuple(amplitudes)
 
 
+def compute_adaptive_continuum_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    tolerance: float = 1e-6,
+    max_radial_order: int = 5,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> tuple[complex, ...]:
+    previous: tuple[complex, ...] | None = None
+    directions = _AXIS_DIRECTIONS
+    for radial_order in range(2, max_radial_order + 1):
+        current = compute_continuum_displacement_amplitudes(
+            branches,
+            field_mass=field_mass,
+            momentum_cutoff=momentum_cutoff,
+            radial_quadrature_order=radial_order,
+            angular_directions=directions + _DIAGONAL_DIRECTIONS,
+            source_width=source_width,
+            time_quadrature_order=time_quadrature_order,
+        )
+        if previous is not None and max(abs(a - b) for a, b in zip(current, previous)) <= tolerance:
+            return current
+        previous = current
+    if previous is None:
+        raise ValueError("Adaptive quadrature failed to initialize.")
+    return previous
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1034,6 +1213,46 @@ def compare_coherent_states(
         relative_phase=relative_phase,
         norm_distance=sqrt(difference_norm_sq),
     )
+
+
+def compare_gaussian_mode_states(
+    left: GaussianModeState,
+    right: GaussianModeState,
+) -> CoherentStateComparison:
+    if len(left.displacement) != len(right.displacement) or len(left.covariance_diag) != len(right.covariance_diag):
+        raise ValueError("GaussianModeState inputs must have matching lengths.")
+    if len(left.displacement) != len(left.covariance_diag):
+        raise ValueError("Each GaussianModeState needs matching displacement/covariance dimensions.")
+    determinant_factor = 1.0
+    weighted_distance = 0.0
+    for left_cov, right_cov, left_alpha, right_alpha in zip(
+        left.covariance_diag,
+        right.covariance_diag,
+        left.displacement,
+        right.displacement,
+    ):
+        total_cov = max(left_cov + right_cov, 1e-12)
+        determinant_factor *= (2.0 * sqrt(left_cov * right_cov + 1e-12) / total_cov)
+        weighted_distance += abs(left_alpha - right_alpha) ** 2 / total_cov
+    vacuum_suppression = determinant_factor * exp(-0.5 * weighted_distance)
+    relative_phase = compute_displacement_operator_phase(left.displacement, right.displacement)
+    return CoherentStateComparison(
+        overlap=vacuum_suppression * complex_exp(1j * relative_phase),
+        vacuum_suppression=vacuum_suppression,
+        relative_phase=relative_phase,
+        norm_distance=sqrt(weighted_distance),
+    )
+
+
+def compare_superposition_states(
+    left: ModeSuperpositionState,
+    right: ModeSuperpositionState,
+) -> complex:
+    total = 0.0j
+    for weight_left, component_left in zip(left.weights, left.components):
+        for weight_right, component_right in zip(right.weights, right.components):
+            total += weight_left.conjugate() * weight_right * compare_coherent_states(component_left, component_right).overlap
+    return total
 
 
 def evolve_coherent_state(
@@ -1321,6 +1540,37 @@ def compute_composite_phase_matrix(
             row.append(total)
         matrix.append(tuple(row))
     return tuple(matrix)
+
+
+def sample_mediator_field(
+    source: BranchPath,
+    samples: tuple[tuple[float, Vector3], ...],
+    *,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> tuple[FieldSample, ...]:
+    return tuple(
+        FieldSample(
+            t=sample_time,
+            position=position,
+            value=_mediator_field_value(
+                source,
+                sample_time,
+                position,
+                mass=mass,
+                cutoff=cutoff,
+                mediator=mediator,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            ),
+        )
+        for sample_time, position in samples
+    )
 
 
 def compute_wavepacket_phase_matrix(

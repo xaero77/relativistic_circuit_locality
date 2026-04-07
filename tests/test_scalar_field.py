@@ -6,7 +6,11 @@ from math import asinh, pi
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
     CompositeBranch,
+    GaussianModeState,
+    ModeSuperpositionState,
     TrajectoryPoint,
+    compute_adaptive_continuum_displacement_amplitudes,
+    compute_anisotropic_sampled_spacetime_phase,
     analyze_branch_pair_coherent_overlap,
     analyze_branch_pair_coherent_state,
     analyze_branch_pair_phase,
@@ -24,11 +28,14 @@ from relativistic_circuit_locality.scalar_field import (
     compute_phi_rs_samples,
     compute_sampled_spacetime_phase,
     compute_wavepacket_phase_matrix,
+    compare_gaussian_mode_states,
     compare_coherent_states,
+    compare_superposition_states,
     evolve_coherent_state,
     field_mediation_intervals,
     is_field_mediated,
     sample_branch_field,
+    sample_mediator_field,
 )
 
 
@@ -219,6 +226,25 @@ class ScalarFieldTests(unittest.TestCase):
         finite_width = compute_sampled_spacetime_phase(left, right, mass=0.5, target_width=0.4, propagation="kg_retarded")
         self.assertNotAlmostEqual(pointlike, finite_width)
 
+    def test_anisotropic_sampled_phase_changes_with_width_tensor(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        isotropic_like = compute_anisotropic_sampled_spacetime_phase(
+            left,
+            right,
+            mass=0.5,
+            target_widths=(0.2, 0.2, 0.2),
+            propagation="instantaneous",
+        )
+        anisotropic = compute_anisotropic_sampled_spacetime_phase(
+            left,
+            right,
+            mass=0.5,
+            target_widths=(0.2, 0.6, 0.1),
+            propagation="instantaneous",
+        )
+        self.assertNotAlmostEqual(isotropic_like, anisotropic)
+
     def test_higher_order_quadrature_better_matches_analytic_moving_worldline_integral(self) -> None:
         moving = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
         static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])
@@ -346,6 +372,12 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(amplitudes), 1)
         self.assertNotEqual(amplitudes[0], 0.0j)
 
+    def test_adaptive_continuum_displacement_returns_value(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        amplitudes = compute_adaptive_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(amplitudes), 1)
+        self.assertNotEqual(amplitudes[0], 0.0j)
+
     def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
         profile = (1.0 + 2.0j, -0.5j)
         self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
@@ -355,6 +387,18 @@ class ScalarFieldTests(unittest.TestCase):
         comparison = compare_coherent_states(profile, profile)
         self.assertAlmostEqual(comparison.vacuum_suppression, 1.0)
         self.assertAlmostEqual(abs(comparison.overlap), 1.0)
+
+    def test_compare_gaussian_mode_states_reduces_overlap_with_covariance_mismatch(self) -> None:
+        left = GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(0.5,))
+        right = GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(2.0,))
+        comparison = compare_gaussian_mode_states(left, right)
+        self.assertLess(comparison.vacuum_suppression, 1.0)
+
+    def test_compare_superposition_states_returns_finite_overlap(self) -> None:
+        left = ModeSuperpositionState(weights=(1.0 + 0.0j, 0.5 + 0.0j), components=((1.0 + 0.0j,), (0.0 + 0.0j,)))
+        right = ModeSuperpositionState(weights=(1.0 + 0.0j,), components=((1.0 + 0.0j,),))
+        overlap = compare_superposition_states(left, right)
+        self.assertNotEqual(overlap, 0.0j)
 
     def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
         momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
@@ -402,6 +446,11 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(abs(gravity[0][0]), 0.0)
         self.assertAlmostEqual(abs(gravity[0][0]), abs(vector[0][0]))
         self.assertNotAlmostEqual(gravity[0][0], vector[0][0])
+
+    def test_sample_mediator_field_supports_gravity_mode(self) -> None:
+        source = branch("A0", -2.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        samples = sample_mediator_field(source, ((1.5, (1.0, 0.0, 0.0)),), mass=0.5, mediator="gravity", propagation="instantaneous")
+        self.assertGreater(samples[0].value, 0.0)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
