@@ -141,14 +141,74 @@
 
 ## 추가해야 할 기능
 
-- 현재 코드베이스 수준에서 계획된 추가 기능 항목은 모두 구현했다.
-- 이후 과제는 정확도와 물리적 충실도를 높이는 연구형 확장이다.
+### 물리적 충실도 확장
+
+- 벡터장 매개자에 대한 spin-1 편광 텐서 구조 반영 (현재는 massless scalar 로 대체)
+- 중력 매개자에 대한 spin-2 linearized gravity 텐서 구조 반영 (현재는 `|charge|` 결합의 massless scalar 로 대체)
+- massive vector/graviton propagator 지원 (현재 vector/gravity 매개자는 `mass=0` 으로 고정)
+- self-energy 위상에 대한 UV 정규화(renormalization) 절차 도입 (현재는 cutoff 만으로 정규화)
+- 고유 시간(proper time) 기반 worldline 매개변수화 (현재는 좌표 시간만 사용)
+- 비관성/가속 worldline 에 대한 상대론적 운동방정식(Lorentz force 등) 통합
+- 환경 결합 및 decoherence 모델 추가
+- genuinely multi-body quantum correlation 처리 (현재 `CompositeBranch`는 pairwise 합산만 수행)
+
+### 수치 정밀도 및 알고리즘 개선
+
+- Gauss-Legendre quadrature 를 6차 이상으로 확장 (현재 최대 5차, 하드코딩된 lookup table)
+- `_bessel_j1` Taylor 급수를 큰 인수에서도 안정적인 구현으로 교체 (asymptotic expansion 또는 라이브러리 활용)
+- 수동 DFT `O(N²)` 를 실제 FFT `O(N log N)` 으로 교체
+- 구면 quadrature 를 Lebedev 격자 등 체계적 방법으로 교체 (현재 최대 26개 축/대각/모서리 방향)
+- retarded time finder 의 수렴 보장 강화 (현재 단순 고정점 반복, 상대론적 source 에서 실패 가능)
+- backreaction gradient 를 3차원 전체로 확장 (현재 x축 방향만 계산, y/z는 0으로 고정)
+
+### PDE/격자 개선
+
+- 실제 유한차분 또는 spectral PDE solver 로 Klein-Gordon 방정식 직접 적분 (현재 격자 위에서 커널 함수만 평가)
+- 격자 smoothing 을 물리적 시간 stepper 로 교체 (현재 nearest-neighbor 평균)
+- 경계조건을 물리적 조건에서 도출 (현재 ad-hoc edge averaging/zeroing/neighbor copy)
+- damping profile 을 물리적 산일(dissipation)에서 도출 (현재 인위적 `1/(1 + strength*index)`)
+
+### 얽힘 진단 확장
+
+- von Neumann entropy, negativity 등 얽힘 측도 계산
+- entanglement witness / visibility 계산
+- field mode 별 occupation number 분포 (현재는 총 occupation number 만 계산)
 
 ## 현재 구현의 한계
 
-- `CHAT.md`에서 코드베이스 수준으로 열거했던 현재 구현의 한계 항목은 모두 대응 API로 구현했다. `close_current_limitations`에 더해 `solve_high_fidelity_pde_bundle`, `compile_complete_state_family_bundle`, `solve_exact_dynamics_surrogate`, `close_research_grade_limitations`까지 제공한다.
-- 남아 있는 것은 기능 미구현이 아니라 surrogate 모델의 연구용 정확도 한계다. 현재 구현은 여전히 piecewise linear worldline, finite quadrature, sampled lattice, effective mediator coupling, symbolic bookkeeping 을 결합한 참조 코드다.
-- 따라서 “더 큰 PDE solver”, “더 강한 error control”, “더 일반적인 state family”, “실제 gauge/GR field equation solver”는 이제 문서상 미구현 기능이 아니라, 현재 surrogate bundle 위에서 물리적 충실도를 높이는 후속 연구 과제로 본다.
+### 근본적 한계
+
+- 논문의 parametric approximation 범위 안에서만 동작한다. 완전한 QFT 동역학을 직접 적분하지 않는다.
+- piecewise linear worldline, finite quadrature, sampled lattice, effective mediator coupling, symbolic bookkeeping 을 결합한 참조 코드 수준이다.
+
+### 물리 모델 한계
+
+- **매개자 단순화**: `vector` 매개자는 massless scalar (mass=0) 로, `gravity` 매개자는 `|charge|` 결합의 massless scalar 로 대체되어 있다. 실제 spin-1/spin-2 텐서 구조가 없다 (`_mediator_field_value`, line 856–871).
+- **자기에너지 정규화 없음**: self-energy 위상이 Yukawa cutoff 로만 정규화된다. 체계적 UV 정규화 절차가 없다.
+- **좌표 시간만 사용**: proper time 매개변수화가 없으므로 가속 worldline 에서의 상대론적 효과가 정확하지 않다.
+- **microcausality 판정이 자명**: `evaluate_microcausality_commutator`는 spacelike 구간에서 항상 0 을 반환하고, 비분리 구간에서 1 을 반환한다. 실제 장 교환자(commutator)를 계산하지 않는다 (line 3289).
+- **다체 상관 미반영**: `CompositeBranch`는 구성요소 간 pairwise 위상 합산만 수행하며, genuinely multi-body quantum correlation 을 포착하지 않는다.
+- **decoherence/환경 결합 없음**: 폐쇄 계(closed system) 만 다루며 환경과의 상호작용에 의한 결어긋남을 모델링하지 않는다.
+
+### 수치 알고리즘 한계
+
+- **quadrature 차수 제한**: Gauss-Legendre 규칙이 1~5차까지만 하드코딩되어 있다 (line 661–662). 높은 정밀도가 필요한 경우 확장 불가.
+- **Bessel 함수 정밀도**: `_bessel_j1` 이 Taylor 급수로 구현되어 있어 큰 인수(`m·τ ≫ 1`)에서 수렴이 느리거나 정밀도가 떨어질 수 있다 (line 630–639).
+- **DFT 비효율**: `solve_spectral_lattice`의 DFT 가 `O(N²)` 수동 루프로 구현되어 있다 (line 2645–2650). 큰 격자에서 비효율적.
+- **각도 방향 제한**: 연속 운동량 적분의 각도 평균이 최대 26개(축 6 + 대각 8 + 모서리 12) 이산 방향으로만 수행된다. 체계적 구면 quadrature(Lebedev 등)가 아니다.
+- **retarded time 수렴**: `_retarded_source_time`이 단순 고정점 반복(12회)으로 구현되어 있어, 상대론적으로 빠른 source 에서 수렴이 보장되지 않는다 (line 666–691).
+
+### 격자/PDE 한계
+
+- **PDE 미적분**: 모든 격자/PDE 함수(`solve_field_lattice`, `solve_surrogate_4d_field_equation` 등)는 격자 점에서 커널 함수를 평가할 뿐, 실제 편미분 방정식을 유한차분이나 spectral 방법으로 풀지 않는다.
+- **1차원 backreaction**: `evolve_backreacted_branch`가 x축 방향 gradient 만 계산하고 y, z 방향 shift 는 0 으로 고정한다 (line 2916–2918).
+- **인위적 smoothing/damping**: 격자 dynamics 의 smoothing 은 nearest-neighbor 평균이고, FFT evolution 의 damping 은 `1/(1 + strength*index)` 형태로, 물리적 근거 없이 도입되었다.
+- **ad-hoc 경계조건**: spectral lattice 의 경계조건(periodic, Dirichlet, Neumann)이 물리에서 도출된 것이 아니라 가장자리 값 조작으로 구현되어 있다.
+
+### 진단/출력 한계
+
+- **얽힘 측도 부재**: 상대 위상(phase)만 계산하며, von Neumann entropy, negativity, entanglement witness 등 표준 얽힘 측도를 제공하지 않는다.
+- **mode 별 occupation 분포 없음**: 총 occupation number 만 계산하고, 개별 momentum mode 별 분포를 분석하지 않는다.
 
 ## 사용 방법
 
