@@ -23,8 +23,9 @@
 - spacetime sample point 에서 field 를 직접 평가하는 `sample_branch_field`와 `compute_sampled_spacetime_phase`
 - target worldline 에서 `phi_rs` 샘플을 직접 반환하는 `compute_phi_rs_samples`
 - 비등방 width tensor 를 쓰는 spacetime field sampling
-- 유한 개 momentum mode, continuum radial quadrature, adaptive refinement 에 대한 Fourier-space displacement amplitude
-- coherent-state 자유 진화, vacuum suppression, Gaussian/non-Gaussian overlap 추적
+- 지정한 시공간 격자 위의 lattice field sampling 과 effective backreaction trajectory
+- 유한 개 momentum mode, continuum radial quadrature, adaptive refinement, shell splitting 에 대한 Fourier-space displacement amplitude
+- coherent-state 자유 진화, vacuum suppression, Gaussian/non-Gaussian/cat-state overlap 추적
 
 현재 코드는 논문의 parametric approximation 안에서 동작한다. 즉, 완전한 QFT 동역학을 직접 적분하지 않고, 시간 이산화된 궤적과 준정적 상호작용 커널을 이용해 논문의 구조를 계산 가능한 형태로 단순화했다.
 
@@ -37,8 +38,9 @@
 - 위상 분해: `analyze_branch_pair_phase`, `analyze_phase_decomposition`
 - wavepacket: `compute_wavepacket_phase_matrix`, `analyze_wavepacket_phase_decomposition`
 - direct field sampling: `FieldSample`, `sample_branch_field`, `compute_sampled_spacetime_phase`, `compute_anisotropic_sampled_spacetime_phase`
+- lattice/backreaction: `FieldLattice`, `solve_field_lattice`, `evolve_backreacted_branch`
 - explicit `phi_rs`: `compute_phi_rs_samples`
-- Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_continuum_displacement_amplitudes`, `compute_adaptive_continuum_displacement_amplitudes`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `CoherentStateComparison`, `GaussianModeState`, `ModeSuperpositionState`, `compare_coherent_states`, `compare_gaussian_mode_states`, `compare_superposition_states`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`, `analyze_branch_pair_coherent_overlap`
+- Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_continuum_displacement_amplitudes`, `compute_adaptive_continuum_displacement_amplitudes`, `compute_split_continuum_displacement_amplitudes`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `CoherentStateComparison`, `GaussianModeState`, `GeneralGaussianState`, `ModeSuperpositionState`, `CatModeState`, `compare_coherent_states`, `compare_gaussian_mode_states`, `compare_general_gaussian_states`, `compare_superposition_states`, `compare_cat_mode_states`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`, `analyze_branch_pair_coherent_overlap`
 - mediator/composite: `CompositeBranch`, `compute_mediated_phase_matrix`, `compute_composite_phase_matrix`, `sample_mediator_field`
 
 ## 전파 모드
@@ -51,7 +53,7 @@
 
 최근에는 worldline pair phase 만 적분하던 수준을 넘어서, target worldline 주변의 finite-width density 위에서 `phi_rs`를 직접 샘플링하는 spacetime field-sampling 계층도 추가했다. 이것으로 `-1/2 ∫ d^4x rho phi`를 더 직접적으로 근사할 수 있다.
 
-추가로, 연속 운동량 적분은 radial quadrature, 유한 개 각도 방향 평균, adaptive refinement 로 근사하고, coherent-state 쪽은 vacuum overlap, diagonal Gaussian covariance, 유한 개 coherent superposition overlap 까지 계산한다. 다입자와 gravity/vector 확장은 mediator-specific effective field sampling 수준에서 제공한다.
+추가로, 연속 운동량 적분은 radial quadrature, 유한 개 각도 방향 평균, adaptive refinement, shell splitting 으로 근사하고, coherent-state 쪽은 vacuum overlap, diagonal/비대각 Gaussian covariance, 유한 개 coherent superposition 및 cat-state overlap 까지 계산한다. 다입자와 gravity/vector 확장은 mediator-specific field sampling 과 effective backreaction 수준에서 제공한다.
 
 ## 파일 구성
 

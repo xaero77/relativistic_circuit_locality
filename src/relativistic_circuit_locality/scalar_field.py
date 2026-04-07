@@ -167,6 +167,29 @@ class ModeSuperpositionState:
             raise ValueError("weights and components must have the same length.")
 
 
+@dataclass(frozen=True)
+class GeneralGaussianState:
+    displacement: tuple[complex, ...]
+    covariance: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class CatModeState:
+    weights: tuple[complex, ...]
+    components: tuple[GaussianModeState, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.weights) != len(self.components):
+            raise ValueError("weights and components must have the same length.")
+
+
+@dataclass(frozen=True)
+class FieldLattice:
+    samples: tuple[FieldSample, ...]
+    time_slices: tuple[float, ...]
+    spatial_points: tuple[Vector3, ...]
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -1187,6 +1210,42 @@ def compute_adaptive_continuum_displacement_amplitudes(
     return previous
 
 
+def compute_split_continuum_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    momentum_splits: int = 4,
+    angular_directions: tuple[Vector3, ...] = _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS,
+    radial_quadrature_order: int = 5,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> tuple[complex, ...]:
+    if momentum_splits <= 0:
+        raise ValueError("momentum_splits must be positive.")
+    total = [0.0j for _ in branches]
+    for split in range(momentum_splits):
+        left = momentum_cutoff * split / momentum_splits
+        right = momentum_cutoff * (split + 1) / momentum_splits
+        midpoint = (left + right) / 2.0
+        half_width = (right - left) / 2.0
+        radial_nodes, radial_weights = _gauss_legendre_rule(radial_quadrature_order)
+        for radial_node, radial_weight in zip(radial_nodes, radial_weights):
+            momentum_radius = midpoint + half_width * radial_node
+            partial = compute_continuum_displacement_amplitudes(
+                branches,
+                field_mass=field_mass,
+                momentum_cutoff=max(momentum_radius, 1e-12),
+                radial_quadrature_order=1,
+                angular_directions=angular_directions,
+                source_width=source_width,
+                time_quadrature_order=time_quadrature_order,
+            )
+            for index, value in enumerate(partial):
+                total[index] += radial_weight * value * half_width / max(momentum_radius, 1e-12)
+    return tuple(total)
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1252,6 +1311,47 @@ def compare_superposition_states(
     for weight_left, component_left in zip(left.weights, left.components):
         for weight_right, component_right in zip(right.weights, right.components):
             total += weight_left.conjugate() * weight_right * compare_coherent_states(component_left, component_right).overlap
+    return total
+
+
+def compare_general_gaussian_states(
+    left: GeneralGaussianState,
+    right: GeneralGaussianState,
+) -> CoherentStateComparison:
+    if len(left.displacement) != len(right.displacement):
+        raise ValueError("GeneralGaussianState inputs must have matching displacement lengths.")
+    if len(left.covariance) != len(left.displacement) or len(right.covariance) != len(right.displacement):
+        raise ValueError("Covariance dimensions must match displacement length.")
+    determinant_factor = 1.0
+    weighted_distance = 0.0
+    for index in range(len(left.displacement)):
+        total_cov = max(left.covariance[index][index] + right.covariance[index][index], 1e-12)
+        determinant_factor *= 2.0 * sqrt(
+            max(left.covariance[index][index], 1e-12) * max(right.covariance[index][index], 1e-12)
+        ) / total_cov
+        weighted_distance += abs(left.displacement[index] - right.displacement[index]) ** 2 / total_cov
+        for jndex in range(index):
+            weighted_distance += abs(left.covariance[index][jndex] - right.covariance[index][jndex]) / total_cov
+    vacuum_suppression = determinant_factor * exp(-0.5 * weighted_distance)
+    relative_phase = compute_displacement_operator_phase(left.displacement, right.displacement)
+    overlap = vacuum_suppression * complex_exp(1j * relative_phase)
+    return CoherentStateComparison(
+        overlap=overlap,
+        vacuum_suppression=vacuum_suppression,
+        relative_phase=relative_phase,
+        norm_distance=sqrt(weighted_distance),
+    )
+
+
+def compare_cat_mode_states(
+    left: CatModeState,
+    right: CatModeState,
+) -> complex:
+    total = 0.0j
+    for weight_left, component_left in zip(left.weights, left.components):
+        for weight_right, component_right in zip(right.weights, right.components):
+            comparison = compare_gaussian_mode_states(component_left, component_right)
+            total += weight_left.conjugate() * weight_right * comparison.overlap
     return total
 
 
@@ -1571,6 +1671,84 @@ def sample_mediator_field(
         )
         for sample_time, position in samples
     )
+
+
+def solve_field_lattice(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> FieldLattice:
+    samples = tuple(
+        FieldSample(
+            t=time_value,
+            position=position,
+            value=_mediator_field_value(
+                source,
+                time_value,
+                position,
+                mass=mass,
+                cutoff=cutoff,
+                mediator=mediator,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            ),
+        )
+        for time_value in time_slices
+        for position in spatial_points
+    )
+    return FieldLattice(samples=samples, time_slices=time_slices, spatial_points=spatial_points)
+
+
+def evolve_backreacted_branch(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+) -> BranchPath:
+    updated_points: list[TrajectoryPoint] = []
+    for point in target.points:
+        center = point.position
+        field_x_plus = _mediator_field_value(
+            source,
+            point.t,
+            _add(center, (cutoff, 0.0, 0.0)),
+            mass=mass,
+            cutoff=cutoff,
+            mediator=mediator,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+        field_x_minus = _mediator_field_value(
+            source,
+            point.t,
+            _add(center, (-cutoff, 0.0, 0.0)),
+            mass=mass,
+            cutoff=cutoff,
+            mediator=mediator,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+        )
+        gradient_x = (field_x_plus - field_x_minus) / (2.0 * cutoff)
+        sign = 1.0 if mediator in {"gravity", "scalar"} else -1.0
+        shifted = _add(center, (sign * response_strength * gradient_x, 0.0, 0.0))
+        updated_points.append(TrajectoryPoint(point.t, shifted))
+    return BranchPath(label=f"{target.label}_{mediator}_backreacted", charge=target.charge, points=tuple(updated_points))
 
 
 def compute_wavepacket_phase_matrix(

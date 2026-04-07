@@ -5,8 +5,10 @@ from math import asinh, pi
 
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
+    CatModeState,
     CompositeBranch,
     GaussianModeState,
+    GeneralGaussianState,
     ModeSuperpositionState,
     TrajectoryPoint,
     compute_adaptive_continuum_displacement_amplitudes,
@@ -27,15 +29,20 @@ from relativistic_circuit_locality.scalar_field import (
     compute_mediated_phase_matrix,
     compute_phi_rs_samples,
     compute_sampled_spacetime_phase,
+    compute_split_continuum_displacement_amplitudes,
     compute_wavepacket_phase_matrix,
+    compare_cat_mode_states,
+    compare_general_gaussian_states,
     compare_gaussian_mode_states,
     compare_coherent_states,
     compare_superposition_states,
+    evolve_backreacted_branch,
     evolve_coherent_state,
     field_mediation_intervals,
     is_field_mediated,
     sample_branch_field,
     sample_mediator_field,
+    solve_field_lattice,
 )
 
 
@@ -378,6 +385,12 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(amplitudes), 1)
         self.assertNotEqual(amplitudes[0], 0.0j)
 
+    def test_split_continuum_displacement_returns_value(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        amplitudes = compute_split_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(amplitudes), 1)
+        self.assertNotEqual(amplitudes[0], 0.0j)
+
     def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
         profile = (1.0 + 2.0j, -0.5j)
         self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
@@ -394,10 +407,31 @@ class ScalarFieldTests(unittest.TestCase):
         comparison = compare_gaussian_mode_states(left, right)
         self.assertLess(comparison.vacuum_suppression, 1.0)
 
+    def test_compare_general_gaussian_states_supports_off_diagonal_covariance(self) -> None:
+        left = GeneralGaussianState(displacement=(1.0 + 0.0j, 0.0j), covariance=((1.0, 0.2), (0.2, 1.5)))
+        right = GeneralGaussianState(displacement=(1.0 + 0.0j, 0.1j), covariance=((1.2, 0.1), (0.1, 1.4)))
+        comparison = compare_general_gaussian_states(left, right)
+        self.assertLessEqual(abs(comparison.overlap), 1.0)
+
     def test_compare_superposition_states_returns_finite_overlap(self) -> None:
         left = ModeSuperpositionState(weights=(1.0 + 0.0j, 0.5 + 0.0j), components=((1.0 + 0.0j,), (0.0 + 0.0j,)))
         right = ModeSuperpositionState(weights=(1.0 + 0.0j,), components=((1.0 + 0.0j,),))
         overlap = compare_superposition_states(left, right)
+        self.assertNotEqual(overlap, 0.0j)
+
+    def test_compare_cat_mode_states_returns_finite_overlap(self) -> None:
+        left = CatModeState(
+            weights=(1.0 + 0.0j, 0.5 + 0.0j),
+            components=(
+                GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(1.0,)),
+                GaussianModeState(displacement=(-1.0 + 0.0j,), covariance_diag=(1.0,)),
+            ),
+        )
+        right = CatModeState(
+            weights=(1.0 + 0.0j,),
+            components=(GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(1.0,)),),
+        )
+        overlap = compare_cat_mode_states(left, right)
         self.assertNotEqual(overlap, 0.0j)
 
     def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
@@ -451,6 +485,23 @@ class ScalarFieldTests(unittest.TestCase):
         source = branch("A0", -2.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
         samples = sample_mediator_field(source, ((1.5, (1.0, 0.0, 0.0)),), mass=0.5, mediator="gravity", propagation="instantaneous")
         self.assertGreater(samples[0].value, 0.0)
+
+    def test_solve_field_lattice_returns_full_grid(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        lattice = solve_field_lattice(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(lattice.samples), 4)
+
+    def test_backreacted_branch_shifts_target_positions(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        updated = evolve_backreacted_branch(source, target, mass=0.5, propagation="instantaneous", response_strength=0.1)
+        self.assertNotEqual(updated.points[0].position, target.points[0].position)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

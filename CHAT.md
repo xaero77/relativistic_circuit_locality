@@ -34,6 +34,7 @@
 - worldline pair 적분만 하지 않고 spacetime sample point 에서 `phi_rs`를 직접 평가하는 `sample_branch_field` 및 `compute_sampled_spacetime_phase` 추가
 - target worldline 에서 `phi_rs` 표본을 직접 뽑는 `compute_phi_rs_samples` 추가
 - 비등방 width tensor 를 쓰는 `compute_anisotropic_sampled_spacetime_phase` 추가
+- 지정한 시공간 격자 위에서 장 표본을 직접 푸는 `FieldLattice`, `solve_field_lattice` 추가
 - branch matrix 로부터 qudit 얽힘에 대응하는 상대 위상 `compute_entanglement_phase` 구현
 - branch pair 별 self-energy, 방향성 있는 cross-term, 대칭 interaction, total phase 를 분리해 주는 `analyze_branch_pair_phase` 구현
 - branch 집합 전체에 대해 self phase 벡터, directed cross matrix, symmetric interaction matrix, total matrix 를 한 번에 계산하는 `analyze_phase_decomposition` 구현
@@ -45,12 +46,15 @@
 - branch worldline 로부터 momentum mode 별 Fourier-space displacement amplitude `compute_branch_displacement_amplitudes` 구현
 - 각운동량 방향 평균과 radial quadrature 를 써서 연속 운동량 적분을 근사하는 `compute_continuum_displacement_amplitudes` 구현
 - 적응형 radial order refinement 를 쓰는 `compute_adaptive_continuum_displacement_amplitudes` 구현
+- momentum shell 분할 기반의 `compute_split_continuum_displacement_amplitudes` 구현
 - 두 계의 branch 조합 `(r, s)`마다 displacement profile 을 합성하는 `compute_branch_pair_displacements` 구현
 - displacement operator 합성에서 생기는 BCH 위상을 mode profile 로 계산하는 `compute_displacement_operator_phase` 구현
 - branch pair 가 만드는 field coherent state 의 자유 진화와 occupation number 를 추적하는 `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state` 구현
 - coherent-state vacuum suppression, overlap, 상대 위상을 함께 계산하는 `CoherentStateComparison`, `compare_coherent_states`, `analyze_branch_pair_coherent_overlap` 구현
 - diagonal covariance 를 가진 Gaussian mode state overlap 과 coherent-state superposition overlap 을 위한 `GaussianModeState`, `ModeSuperpositionState`, `compare_gaussian_mode_states`, `compare_superposition_states` 구현
+- 비대각 공분산 Gaussian overlap 과 cat-state overlap 을 위한 `GeneralGaussianState`, `CatModeState`, `compare_general_gaussian_states`, `compare_cat_mode_states` 구현
 - mediator field sample 을 직접 뽑는 `sample_mediator_field` 추가
+- mediator-specific effective force 로 target worldline 을 업데이트하는 `evolve_backreacted_branch` 추가
 - 예제 실행용 `python -m relativistic_circuit_locality.demo` 추가 및 `instantaneous`/`retarded`/`time_symmetric`/`causal_history`/`kg_retarded` 위상 비교, branch pair phase 분해, finite-width wavepacket 위상, displacement/coherent-state 출력 지원
 - `unittest` 기반 회귀 테스트 추가
 - 서로 다른 시간 샘플링을 가진 branch 사이에서도 선형 보간 기반으로 거리, mediation, 위상을 계산하도록 개선
@@ -60,6 +64,7 @@
 - 4차원 field-sampling 적분이 pointlike limit 과 finite-width 보정에 반응하는지에 대한 회귀 테스트 추가
 - continuum displacement, coherent overlap, mediator variant, composite branch 합성에 대한 회귀 테스트 추가
 - 비등방 field sampling, adaptive continuum quadrature, Gaussian/non-Gaussian overlap, mediator field sampling 에 대한 회귀 테스트 추가
+- lattice field sampling, split continuum quadrature, general Gaussian/cat overlap, backreaction trajectory 에 대한 회귀 테스트 추가
 
 ## 현재 공개 API 요약
 
@@ -70,7 +75,8 @@
 - Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`
 - 직접 field sampling: `FieldSample`, `sample_branch_field`, `compute_sampled_spacetime_phase`, `compute_phi_rs_samples`
 - 비등방 field sampling: `compute_anisotropic_sampled_spacetime_phase`
-- 연속 Fourier/coherent-state: `compute_continuum_displacement_amplitudes`, `compute_adaptive_continuum_displacement_amplitudes`, `CoherentStateComparison`, `compare_coherent_states`, `GaussianModeState`, `ModeSuperpositionState`, `compare_gaussian_mode_states`, `compare_superposition_states`, `analyze_branch_pair_coherent_overlap`
+- lattice/backreaction: `FieldLattice`, `solve_field_lattice`, `evolve_backreacted_branch`
+- 연속 Fourier/coherent-state: `compute_continuum_displacement_amplitudes`, `compute_adaptive_continuum_displacement_amplitudes`, `compute_split_continuum_displacement_amplitudes`, `CoherentStateComparison`, `compare_coherent_states`, `GaussianModeState`, `GeneralGaussianState`, `ModeSuperpositionState`, `CatModeState`, `compare_gaussian_mode_states`, `compare_general_gaussian_states`, `compare_superposition_states`, `compare_cat_mode_states`, `analyze_branch_pair_coherent_overlap`
 - 다입자/매개자 확장: `CompositeBranch`, `compute_mediated_phase_matrix`, `compute_composite_phase_matrix`, `sample_mediator_field`
 
 ## 전파 모드 요약
@@ -83,20 +89,20 @@
 
 ## 추가해야 할 기능
 
-- 4차원 격자/PDE solver 수준의 full field evolution
-- continuum momentum 적분의 더 높은 차수 angular decomposition 과 적응형 domain splitting
-- Appendix D 전체 위상 bookkeeping 의 비대각 공분산/비가우시안 상태에 대한 일반화
-- gauge field/general relativity 의 실제 장 방정식 solver 와 backreaction
+- full PDE solver 와 sparse/FFT 기반의 더 큰 4차원 격자 진화
+- continuum momentum 적분의 더 높은 정밀도 angular basis 와 error estimator
+- Appendix D 전체 위상 bookkeeping 의 일반 multimode Gaussian/state tomography 수준 확장
+- gauge field/general relativity 의 effective kernel 을 넘는 실제 field equation solver 와 stronger backreaction
 
 ## 현재 구현의 한계
 
 - 기존의 "동시각 정적 상호작용만 본다"는 한계는 `retarded`, `time_symmetric`, `causal_history`, `kg_retarded` 전파 모드로 개선했다. 특히 `kg_retarded`는 massive Klein-Gordon retarded Green function 의 shell/tail 구조를 반영해 `phi_rs`를 더 직접적으로 근사한다. 다만 아직도 연속 4차원 source density 에 대한 완전한 retarded Green function 적분기라기보다, piecewise linear worldline 위에서 수치 적분하는 축약 모델이다.
-- 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature, 4차원 field-sampling 적분기, 비등방 width tensor sampling 으로 개선했다. `compute_sampled_spacetime_phase`와 `compute_anisotropic_sampled_spacetime_phase`는 target worldline 주위의 finite-width density 위에서 `phi_rs`를 직접 샘플링해 `∫ d^4x rho phi`를 근사한다. 다만 아직도 균일 격자 PDE solver 나 연속 source density 전체에 대한 완전한 4차원 Green function 적분기는 아니다.
+- 기존의 "구간별 중점값 하나만 적분한다"는 한계는 Gauss-Legendre quadrature, 4차원 field-sampling 적분기, 비등방 width tensor sampling, 명시적 lattice sampling 으로 개선했다. `compute_sampled_spacetime_phase`, `compute_anisotropic_sampled_spacetime_phase`, `solve_field_lattice`는 target worldline 또는 지정한 시공간 격자 위에서 `phi_rs`를 직접 샘플링한다. 다만 아직도 full PDE solver 나 대규모 격자 진화 엔진은 아니다.
 - self-energy 와 cross-term 분해는 추가했지만, 논문 식 (36)의 연속장 분해를 직접 푼 것이 아니라 현재 Yukawa 기반 수치 모델 위에서 해석한 것이다.
 - finite-width wavepacket 은 isotropic Gaussian profile 로 모델링했고, 3차원 상대 반경 분포에 대한 수치 적분으로 처리한다. 아직 일반적인 비등방/비가우시안 packet 은 지원하지 않는다.
-- continuum displacement 는 radial quadrature, 유한 개 각도 방향 평균, 적응형 refinement 로 연속 운동량 적분을 근사한다. 따라서 엄밀한 연속 Fourier 적분 전체를 해석적으로 푼 것은 아니다.
-- coherent-state 비교는 vacuum suppression, diagonal Gaussian covariance, 유한 개 coherent superposition overlap 까지 포함하지만, Appendix D 의 모든 위상 bookkeeping 과 일반 상태 family 를 완전히 재현한 것은 아니다.
-- 다입자와 gravity/vector 버전은 superposition, mediator-specific field sampling, effective-kernel 수준의 일반화다. 실제 gauge/gravitational field equation solver 는 아니다.
+- continuum displacement 는 radial quadrature, 유한 개 각도 방향 평균, 적응형 refinement, momentum shell splitting 으로 연속 운동량 적분을 근사한다. 따라서 엄밀한 연속 Fourier 적분 전체를 해석적으로 푼 것은 아니다.
+- coherent-state 비교는 vacuum suppression, diagonal/비대각 Gaussian covariance, finite coherent superposition 과 cat-state overlap 까지 포함하지만, Appendix D 의 모든 위상 bookkeeping 과 일반 상태 family 를 완전히 재현한 것은 아니다.
+- 다입자와 gravity/vector 버전은 superposition, mediator-specific field sampling, effective backreaction 수준의 일반화다. 실제 gauge/gravitational field equation solver 는 아니다.
 - 구현 전체는 여전히 QFT full evolution 이 아니라 논문의 parametric approximation 안에서 움직이는 축약 모델이다.
 - microcausality 자체를 commutator 적분으로 평가하지 않고, spacelike separation criterion 으로 판정한다.
 
