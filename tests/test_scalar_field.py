@@ -26,6 +26,7 @@ from relativistic_circuit_locality.scalar_field import (
     compute_closest_approach,
     compute_displacement_operator_phase,
     compute_entanglement_phase,
+    compute_extrapolated_continuum_displacement_amplitudes,
     estimate_continuum_displacement_amplitudes,
     compute_mediated_phase_matrix,
     compute_phi_rs_samples,
@@ -43,11 +44,14 @@ from relativistic_circuit_locality.scalar_field import (
     is_field_mediated,
     sample_branch_field,
     sample_mediator_field,
+    solve_coupled_backreaction,
     solve_field_lattice_dynamics,
     solve_field_lattice,
     iterate_backreaction,
+    solve_multiscale_field_lattice,
     tomograph_cat_mode_state,
     tomograph_general_gaussian_state,
+    tomograph_multimode_family,
 )
 
 
@@ -402,6 +406,13 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(result.amplitudes), 1)
         self.assertGreaterEqual(result.error_estimate, 0.0)
 
+    def test_extrapolated_continuum_displacement_tracks_mode_counts(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_extrapolated_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(len(result.mode_counts), 1)
+        self.assertGreaterEqual(result.mode_counts[-1], result.mode_counts[0])
+
     def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
         profile = (1.0 + 2.0j, -0.5j)
         self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
@@ -453,6 +464,16 @@ class ScalarFieldTests(unittest.TestCase):
     def test_tomograph_cat_mode_state_builds_components(self) -> None:
         state = tomograph_cat_mode_state(((1.0 + 0.0j,), (-1.0 + 0.0j,)))
         self.assertEqual(len(state.components), 2)
+
+    def test_tomograph_multimode_family_returns_phase_matrix(self) -> None:
+        result = tomograph_multimode_family(
+            (
+                ((1.0 + 0.0j, 0.0j), (0.5 + 0.0j, 0.5 + 0.0j)),
+                ((-1.0 + 0.0j, 0.0j), (-0.5 + 0.0j, -0.5 + 0.0j)),
+            )
+        )
+        self.assertEqual(len(result.component_states), 2)
+        self.assertEqual(len(result.relative_phase_matrix), 2)
 
     def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
         momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
@@ -528,6 +549,19 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertEqual(len(evolution.lattices), 3)
 
+    def test_solve_multiscale_field_lattice_refines_spatial_grid(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        evolution = solve_multiscale_field_lattice(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+            refinement_levels=3,
+        )
+        self.assertEqual(len(evolution.levels), 3)
+        self.assertGreater(evolution.spatial_point_counts[-1], evolution.spatial_point_counts[0])
+
     def test_backreacted_branch_shifts_target_positions(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
         target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
@@ -540,6 +574,21 @@ class ScalarFieldTests(unittest.TestCase):
         once = evolve_backreacted_branch(source, target, mass=0.5, propagation="instantaneous", response_strength=0.05)
         repeated = iterate_backreaction(source, target, iterations=3, mass=0.5, propagation="instantaneous", response_strength=0.05)
         self.assertNotEqual(once.points[0].position, repeated.points[0].position)
+
+    def test_solve_coupled_backreaction_updates_both_branches(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_coupled_backreaction(
+            source,
+            target,
+            iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+            response_strength=0.05,
+        )
+        self.assertEqual(result.iterations, 2)
+        self.assertNotEqual(result.source.points[0].position, source.points[0].position)
+        self.assertNotEqual(result.target.points[0].position, target.points[0].position)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

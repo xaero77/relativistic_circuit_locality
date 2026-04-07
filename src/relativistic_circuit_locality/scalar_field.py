@@ -52,6 +52,21 @@ _DIAGONAL_DIRECTIONS: tuple[Vector3, ...] = (
     (-1.0 / sqrt(3.0), -1.0 / sqrt(3.0), -1.0 / sqrt(3.0)),
 )
 
+_EDGE_DIRECTIONS: tuple[Vector3, ...] = (
+    (1.0 / sqrt(2.0), 1.0 / sqrt(2.0), 0.0),
+    (1.0 / sqrt(2.0), -1.0 / sqrt(2.0), 0.0),
+    (-1.0 / sqrt(2.0), 1.0 / sqrt(2.0), 0.0),
+    (-1.0 / sqrt(2.0), -1.0 / sqrt(2.0), 0.0),
+    (1.0 / sqrt(2.0), 0.0, 1.0 / sqrt(2.0)),
+    (1.0 / sqrt(2.0), 0.0, -1.0 / sqrt(2.0)),
+    (-1.0 / sqrt(2.0), 0.0, 1.0 / sqrt(2.0)),
+    (-1.0 / sqrt(2.0), 0.0, -1.0 / sqrt(2.0)),
+    (0.0, 1.0 / sqrt(2.0), 1.0 / sqrt(2.0)),
+    (0.0, 1.0 / sqrt(2.0), -1.0 / sqrt(2.0)),
+    (0.0, -1.0 / sqrt(2.0), 1.0 / sqrt(2.0)),
+    (0.0, -1.0 / sqrt(2.0), -1.0 / sqrt(2.0)),
+)
+
 
 @dataclass(frozen=True)
 class TrajectoryPoint:
@@ -202,7 +217,45 @@ class AngularQuadratureResult:
     error_estimate: float
 
 
+@dataclass(frozen=True)
+class ContinuumExtrapolationResult:
+    amplitudes: tuple[complex, ...]
+    level_errors: tuple[float, ...]
+    mode_counts: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class MultiscaleFieldEvolutionResult:
+    levels: tuple[FieldEvolutionResult, ...]
+    spatial_point_counts: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class MultimodeTomographyResult:
+    component_states: tuple[GeneralGaussianState, ...]
+    aggregate_state: GeneralGaussianState
+    relative_phase_matrix: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class CoupledBackreactionResult:
+    source: BranchPath
+    target: BranchPath
+    iterations: int
+
+
 WidthSpec = float | tuple[float, ...]
+
+
+def _refine_spatial_points(spatial_points: tuple[Vector3, ...]) -> tuple[Vector3, ...]:
+    if len(spatial_points) < 2:
+        return spatial_points
+    refined: list[Vector3] = [spatial_points[0]]
+    for left, right in zip(spatial_points, spatial_points[1:]):
+        midpoint = _scale(_add(left, right), 0.5)
+        refined.append(midpoint)
+        refined.append(right)
+    return tuple(refined)
 
 
 def _overlap_window(*branches: BranchPath) -> tuple[float, float]:
@@ -1289,6 +1342,61 @@ def estimate_continuum_displacement_amplitudes(
     )
 
 
+def compute_extrapolated_continuum_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    tolerance: float = 1e-6,
+    max_mode_order: int = 3,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> ContinuumExtrapolationResult:
+    angular_levels = (
+        _AXIS_DIRECTIONS,
+        _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS,
+        _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS + _EDGE_DIRECTIONS,
+    )
+    previous: tuple[complex, ...] | None = None
+    amplitudes: tuple[complex, ...] | None = None
+    level_errors: list[float] = []
+    mode_counts: list[int] = []
+    for level_index, directions in enumerate(angular_levels[: max_mode_order + 1]):
+        current = compute_adaptive_continuum_displacement_amplitudes(
+            branches,
+            field_mass=field_mass,
+            momentum_cutoff=momentum_cutoff,
+            tolerance=tolerance / max(level_index + 1, 1),
+            max_radial_order=2 + level_index,
+            source_width=source_width,
+            time_quadrature_order=time_quadrature_order,
+        )
+        if len(directions) != len(_AXIS_DIRECTIONS):
+            current = compute_continuum_displacement_amplitudes(
+                branches,
+                field_mass=field_mass,
+                momentum_cutoff=momentum_cutoff,
+                radial_quadrature_order=2 + level_index,
+                angular_directions=directions,
+                source_width=source_width,
+                time_quadrature_order=time_quadrature_order,
+            )
+        amplitudes = current
+        mode_counts.append(len(directions))
+        if previous is not None:
+            level_errors.append(max(abs(left - right) for left, right in zip(current, previous)))
+            if level_errors[-1] <= tolerance:
+                break
+        previous = current
+    if amplitudes is None:
+        raise ValueError("Extrapolated continuum quadrature failed to initialize.")
+    return ContinuumExtrapolationResult(
+        amplitudes=amplitudes,
+        level_errors=tuple(level_errors),
+        mode_counts=tuple(mode_counts),
+    )
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1436,6 +1544,28 @@ def tomograph_cat_mode_state(
     )
     resolved_weights = weights if weights is not None else tuple(1.0 + 0.0j for _ in mode_samples)
     return CatModeState(weights=resolved_weights, components=gaussian_components)
+
+
+def tomograph_multimode_family(
+    branch_mode_samples: tuple[tuple[tuple[complex, ...], ...], ...],
+) -> MultimodeTomographyResult:
+    if not branch_mode_samples:
+        raise ValueError("branch_mode_samples must not be empty.")
+    component_states = tuple(tomograph_general_gaussian_state(samples) for samples in branch_mode_samples)
+    all_samples = tuple(sample for samples in branch_mode_samples for sample in samples)
+    aggregate_state = tomograph_general_gaussian_state(all_samples)
+    relative_phase_matrix = tuple(
+        tuple(
+            compare_general_gaussian_states(component_states[row], component_states[column]).relative_phase
+            for column in range(len(component_states))
+        )
+        for row in range(len(component_states))
+    )
+    return MultimodeTomographyResult(
+        component_states=component_states,
+        aggregate_state=aggregate_state,
+        relative_phase_matrix=relative_phase_matrix,
+    )
 
 
 def evolve_coherent_state(
@@ -1840,6 +1970,47 @@ def solve_field_lattice_dynamics(
     return FieldEvolutionResult(lattices=tuple(smoothed_slices))
 
 
+def solve_multiscale_field_lattice(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    smoothing_strength: float = 0.1,
+    refinement_levels: int = 2,
+) -> MultiscaleFieldEvolutionResult:
+    if refinement_levels <= 0:
+        raise ValueError("refinement_levels must be positive.")
+    levels: list[FieldEvolutionResult] = []
+    spatial_point_counts: list[int] = []
+    current_points = spatial_points
+    for _ in range(refinement_levels):
+        evolution = solve_field_lattice_dynamics(
+            source,
+            time_slices=time_slices,
+            spatial_points=current_points,
+            mass=mass,
+            mediator=mediator,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            smoothing_strength=smoothing_strength,
+        )
+        levels.append(evolution)
+        spatial_point_counts.append(len(current_points))
+        current_points = _refine_spatial_points(current_points)
+    return MultiscaleFieldEvolutionResult(
+        levels=tuple(levels),
+        spatial_point_counts=tuple(spatial_point_counts),
+    )
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -1913,6 +2084,51 @@ def iterate_backreaction(
             response_strength=response_strength,
         )
     return current
+
+
+def solve_coupled_backreaction(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    iterations: int,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+) -> CoupledBackreactionResult:
+    if iterations <= 0:
+        raise ValueError("iterations must be positive.")
+    current_source = source
+    current_target = target
+    for _ in range(iterations):
+        updated_target = evolve_backreacted_branch(
+            current_source,
+            current_target,
+            mass=mass,
+            mediator=mediator,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            response_strength=response_strength,
+        )
+        updated_source = evolve_backreacted_branch(
+            updated_target,
+            current_source,
+            mass=mass,
+            mediator=mediator,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            response_strength=response_strength,
+        )
+        current_source = updated_source
+        current_target = updated_target
+    return CoupledBackreactionResult(source=current_source, target=current_target, iterations=iterations)
 
 
 def compute_wavepacket_phase_matrix(
