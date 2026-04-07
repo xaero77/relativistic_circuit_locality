@@ -332,6 +332,35 @@ class MediatorBackreactionResult:
     phase_shift: float
 
 
+@dataclass(frozen=True)
+class SurrogatePdeResult:
+    lattice: DynamicBoundaryLatticeResult
+    fft_evolution: FftLatticeEvolutionResult
+    total_sample_count: int
+
+
+@dataclass(frozen=True)
+class HighOrderSpectralResult:
+    certified: CertifiedSpectralResult
+    extrapolated: ContinuumExtrapolationResult
+    convergence: SpectralConvergenceResult
+    effective_order: int
+
+
+@dataclass(frozen=True)
+class ComprehensiveBookkeepingResult:
+    transform: MultimodeStateTransformResult
+    identities: AnalyticIdentityResult
+    bookkeeping: SymbolicBookkeepingResult
+
+
+@dataclass(frozen=True)
+class EffectiveFieldEquationResult:
+    mediator: Literal["scalar", "vector", "gravity"]
+    lattice: DynamicBoundaryLatticeResult
+    backreaction: MediatorBackreactionResult
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -1597,6 +1626,47 @@ def compute_certified_spectral_displacement_amplitudes(
     )
 
 
+def compute_high_order_spectral_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    tolerance: float = 1e-6,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> HighOrderSpectralResult:
+    certified = compute_certified_spectral_displacement_amplitudes(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        tolerance=tolerance,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    extrapolated = compute_extrapolated_continuum_displacement_amplitudes(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        tolerance=tolerance,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    convergence = estimate_spectral_convergence(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        tolerance=tolerance,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    return HighOrderSpectralResult(
+        certified=certified,
+        extrapolated=extrapolated,
+        convergence=convergence,
+        effective_order=len(extrapolated.mode_counts),
+    )
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1830,6 +1900,16 @@ def compile_multimode_state_transform(
         labels=labels,
         overlap_matrix=overlap_matrix,
         phase_matrix=phase_matrix,
+    )
+
+
+def compile_comprehensive_multimode_bookkeeping(
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+) -> ComprehensiveBookkeepingResult:
+    return ComprehensiveBookkeepingResult(
+        transform=compile_multimode_state_transform(labeled_mode_samples),
+        identities=verify_multimode_analytic_identities(labeled_mode_samples),
+        bookkeeping=summarize_symbolic_multimode_bookkeeping(labeled_mode_samples),
     )
 
 
@@ -2414,6 +2494,52 @@ def solve_fft_lattice_evolution(
     return FftLatticeEvolutionResult(slices=tuple(damped_slices), damping_profile=tuple(damping_profile))
 
 
+def solve_surrogate_4d_field_equation(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...],
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    damping_strength: float = 0.05,
+) -> SurrogatePdeResult:
+    lattice = solve_dynamic_boundary_lattice(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        boundary_schedule=boundary_schedule,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    fft_evolution = solve_fft_lattice_evolution(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        boundary_schedule=boundary_schedule,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        damping_strength=damping_strength,
+    )
+    return SurrogatePdeResult(
+        lattice=lattice,
+        fft_evolution=fft_evolution,
+        total_sample_count=sum(len(spectral.lattice.samples) for spectral in lattice.slices),
+    )
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -2690,6 +2816,53 @@ def solve_mediator_self_consistent_backreaction(
         quadrature_order=quadrature_order,
     )[0][0]
     return MediatorBackreactionResult(mediator=mediator, result=result, phase_shift=phase_shift)
+
+
+def solve_effective_field_equation_backreaction(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    mediator: Literal["scalar", "vector", "gravity"],
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet", "neumann"], ...],
+    max_iterations: int,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.25,
+    tolerance: float = 1e-6,
+) -> EffectiveFieldEquationResult:
+    lattice = solve_dynamic_boundary_lattice(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        boundary_schedule=boundary_schedule,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    backreaction = solve_mediator_self_consistent_backreaction(
+        source,
+        target,
+        mediator=mediator,
+        max_iterations=max_iterations,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    return EffectiveFieldEquationResult(mediator=mediator, lattice=lattice, backreaction=backreaction)
 
 
 def compute_wavepacket_phase_matrix(
