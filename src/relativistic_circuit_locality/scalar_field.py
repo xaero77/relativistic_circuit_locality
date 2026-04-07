@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from math import exp, factorial, inf, pi, sinh, sqrt
 from typing import Callable, Literal
 
+import numpy as np
+
 
 Vector3 = tuple[float, float, float]
 
@@ -65,6 +67,15 @@ _EDGE_DIRECTIONS: tuple[Vector3, ...] = (
     (0.0, 1.0 / sqrt(2.0), -1.0 / sqrt(2.0)),
     (0.0, -1.0 / sqrt(2.0), 1.0 / sqrt(2.0)),
     (0.0, -1.0 / sqrt(2.0), -1.0 / sqrt(2.0)),
+)
+
+# Lebedev 구면 quadrature 가중치 (4π 정규화, ∑w_i = 1).
+_LEBEDEV_WEIGHTS_6: tuple[float, ...] = tuple(1.0 / 6.0 for _ in range(6))
+_LEBEDEV_WEIGHTS_14: tuple[float, ...] = tuple(1.0 / 15.0 for _ in range(6)) + tuple(3.0 / 40.0 for _ in range(8))
+_LEBEDEV_WEIGHTS_26: tuple[float, ...] = (
+    tuple(1.0 / 21.0 for _ in range(6))
+    + tuple(4.0 / 105.0 for _ in range(12))
+    + tuple(27.0 / 840.0 for _ in range(8))
 )
 
 
@@ -479,6 +490,86 @@ class ResearchGradeClosureResult:
     exact_dynamics: ExactDynamicsSurrogateResult
 
 
+@dataclass(frozen=True)
+class ProperTimeWorldline:
+    branch: BranchPath
+    proper_times: tuple[float, ...]
+    lorentz_factors: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class RenormalizedPhaseResult:
+    raw_matrix: tuple[tuple[float, ...], ...]
+    self_energy_corrections: tuple[float, ...]
+    renormalized_matrix: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class TensorMediatedPhaseResult:
+    scalar_phase: tuple[tuple[float, ...], ...]
+    vector_phase: tuple[tuple[float, ...], ...]
+    gravity_phase: tuple[tuple[float, ...], ...]
+    mediator_mass: float
+
+
+@dataclass(frozen=True)
+class DecoherenceResult:
+    coherence_matrix: tuple[tuple[complex, ...], ...]
+    decoherence_rates: tuple[float, ...]
+    purity: float
+
+
+@dataclass(frozen=True)
+class MultiBodyCorrelationResult:
+    pairwise_phases: tuple[tuple[float, ...], ...]
+    three_body_phase: float
+    total_correlation_phase: float
+
+
+@dataclass(frozen=True)
+class EntanglementMeasures:
+    von_neumann_entropy: float
+    negativity: float
+    witness_value: float
+    visibility: float
+
+
+@dataclass(frozen=True)
+class ModeOccupationDistribution:
+    mode_occupations: tuple[float, ...]
+    total_occupation: float
+    mode_probabilities: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class FiniteDifferencePdeResult:
+    field_values: tuple[tuple[float, ...], ...]
+    time_slices: tuple[float, ...]
+    spatial_points: tuple[Vector3, ...]
+    courant_number: float
+
+
+@dataclass(frozen=True)
+class PhysicalLatticeDynamicsResult:
+    lattices: tuple[FieldLattice, ...]
+    time_step: float
+    method: Literal["leapfrog", "verlet"]
+
+
+@dataclass(frozen=True)
+class RelativisticForceResult:
+    updated_branch: BranchPath
+    proper_times: tuple[float, ...]
+    four_velocities: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class LebedevQuadratureResult:
+    amplitudes: tuple[complex, ...]
+    quadrature_order: int
+    direction_count: int
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -630,6 +721,29 @@ def _mode_energy(momentum: Vector3, mass: float) -> float:
 def _bessel_j1(x: float, *, tolerance: float = 1e-12, max_terms: int = 64) -> float:
     if x == 0.0:
         return 0.0
+    abs_x = abs(x)
+    # 큰 인수에서는 asymptotic expansion 을 쓴다.
+    if abs_x > 10.0:
+        mu = 1.0  # 4*nu^2 where nu=1
+        p = 1.0
+        q = 0.0
+        term_p = 1.0
+        term_q = (mu - 1.0) / (8.0 * abs_x)
+        q = term_q
+        for k in range(1, max_terms):
+            factor_p = -(mu - (4 * k - 3) ** 2) * (mu - (4 * k - 1) ** 2) / (factorial(2 * k) * (8.0 * abs_x) ** (2 * k))
+            term_p *= factor_p if k == 1 else 0.0
+            if k == 1:
+                term_p = -(mu - 1.0) * (mu - 9.0) / (2.0 * (8.0 * abs_x) ** 2)
+                p += term_p
+            if abs(term_p) < tolerance:
+                break
+        amplitude = sqrt(2.0 / (pi * abs_x))
+        chi = abs_x - 3.0 * pi / 4.0
+        from math import cos, sin
+        result = amplitude * (p * cos(chi) - q * sin(chi))
+        return result if x > 0.0 else -result
+    # 작은 인수에서는 Taylor 급수를 쓴다.
     half_x = x / 2.0
     total = 0.0
     for index in range(max_terms):
@@ -657,9 +771,39 @@ def _gauss_legendre_rule(order: int) -> tuple[tuple[float, ...], tuple[float, ..
             (-0.906179845938664, -0.5384693101056831, 0.0, 0.5384693101056831, 0.906179845938664),
             (0.23692688505618908, 0.47862867049936647, 0.5688888888888889, 0.47862867049936647, 0.23692688505618908),
         ),
+        6: (
+            (-0.9324695142031521, -0.6612093864662645, -0.2386191860831969,
+             0.2386191860831969, 0.6612093864662645, 0.9324695142031521),
+            (0.1713244923791704, 0.3607615730481386, 0.4679139345726910,
+             0.4679139345726910, 0.3607615730481386, 0.1713244923791704),
+        ),
+        7: (
+            (-0.9491079123427585, -0.7415311855993945, -0.4058451513773972, 0.0,
+             0.4058451513773972, 0.7415311855993945, 0.9491079123427585),
+            (0.1294849661688697, 0.2797053914892767, 0.3818300505051189, 0.4179591836734694,
+             0.3818300505051189, 0.2797053914892767, 0.1294849661688697),
+        ),
+        8: (
+            (-0.9602898564975363, -0.7966664774136267, -0.5255324099163290, -0.1834346424956498,
+             0.1834346424956498, 0.5255324099163290, 0.7966664774136267, 0.9602898564975363),
+            (0.1012285362903763, 0.2223810344533745, 0.3137066458778873, 0.3626837833783620,
+             0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763),
+        ),
+        9: (
+            (-0.9681602395076261, -0.8360311073266358, -0.6133714327005904, -0.3242534234038089, 0.0,
+             0.3242534234038089, 0.6133714327005904, 0.8360311073266358, 0.9681602395076261),
+            (0.0812743883615744, 0.1806481606948574, 0.2606106964029354, 0.3123470770400029, 0.3302393550012598,
+             0.3123470770400029, 0.2606106964029354, 0.1806481606948574, 0.0812743883615744),
+        ),
+        10: (
+            (-0.9739065285171717, -0.8650633666889845, -0.6794095682990244, -0.4333953941292472, -0.1488743389816312,
+             0.1488743389816312, 0.4333953941292472, 0.6794095682990244, 0.8650633666889845, 0.9739065285171717),
+            (0.0666713443086881, 0.1494513491505806, 0.2190863625159820, 0.2692667193099963, 0.2955242247147529,
+             0.2955242247147529, 0.2692667193099963, 0.2190863625159820, 0.1494513491505806, 0.0666713443086881),
+        ),
     }
     if order not in rules:
-        raise ValueError("quadrature_order must be between 1 and 5.")
+        raise ValueError("quadrature_order must be between 1 and 10.")
     return rules[order]
 
 
@@ -675,19 +819,54 @@ def _retarded_source_time(
     source_start, source_stop = source.time_window
     guess = min(max(target_time, source_start), source_stop)
 
+    # 고정점 반복을 먼저 시도한다.
     for _ in range(iterations):
         distance = _norm(_sub(target.position_at(target_time), source.position_at(guess)))
         updated = target_time - distance / light_speed
         if updated < source_start or updated > source_stop:
-            return None
+            break
         if abs(updated - guess) <= tolerance:
             return updated
         guess = updated
+    else:
+        distance = _norm(_sub(target.position_at(target_time), source.position_at(guess)))
+        updated = target_time - distance / light_speed
+        if source_start <= updated <= source_stop:
+            return updated
 
-    distance = _norm(_sub(target.position_at(target_time), source.position_at(guess)))
-    updated = target_time - distance / light_speed
-    if source_start <= updated <= source_stop:
-        return updated
+    # 고정점이 수렴하지 않으면 bisection 으로 fallback 한다.
+    # f(t_s) = t_s - (t_target - |x_target - x_source(t_s)| / c) = 0
+    low = source_start
+    high = min(target_time, source_stop)
+    if low >= high:
+        return None
+
+    def _residual(t_s: float) -> float:
+        d = _norm(_sub(target.position_at(target_time), source.position_at(t_s)))
+        return t_s - (target_time - d / light_speed)
+
+    f_low = _residual(low)
+    f_high = _residual(high)
+    if f_low * f_high > 0.0:
+        return None
+
+    for _ in range(64):
+        mid = 0.5 * (low + high)
+        if high - low <= tolerance:
+            if source_start <= mid <= source_stop:
+                return mid
+            return None
+        f_mid = _residual(mid)
+        if f_mid * f_low <= 0.0:
+            high = mid
+            f_high = f_mid
+        else:
+            low = mid
+            f_low = f_mid
+
+    mid = 0.5 * (low + high)
+    if source_start <= mid <= source_stop:
+        return mid
     return None
 
 
@@ -2641,13 +2820,8 @@ def solve_spectral_lattice(
     updated_samples = tuple(
         FieldSample(t=time_slices[0], position=spatial_points[index], value=row[index]) for index in range(point_count)
     )
-    coefficients: list[complex] = []
-    for mode in range(point_count):
-        total = 0.0j
-        for index, value in enumerate(row):
-            phase = complex_exp(-2j * pi * mode * index / point_count)
-            total += value * phase
-        coefficients.append(total / point_count)
+    fft_result = np.fft.fft(row) / point_count
+    coefficients = [complex(c) for c in fft_result]
     return SpectralLatticeResult(
         lattice=FieldLattice(samples=updated_samples, time_slices=(time_slices[0],), spatial_points=spatial_points),
         spectral_coefficients=tuple(coefficients),
@@ -2889,34 +3063,31 @@ def evolve_backreacted_branch(
     response_strength: float = 0.05,
 ) -> BranchPath:
     updated_points: list[TrajectoryPoint] = []
+    offsets: tuple[Vector3, ...] = ((cutoff, 0.0, 0.0), (0.0, cutoff, 0.0), (0.0, 0.0, cutoff))
     for point in target.points:
         center = point.position
-        field_x_plus = _mediator_field_value(
-            source,
-            point.t,
-            _add(center, (cutoff, 0.0, 0.0)),
-            mass=mass,
-            cutoff=cutoff,
-            mediator=mediator,
-            propagation=propagation,
-            light_speed=light_speed,
-            quadrature_order=quadrature_order,
-        )
-        field_x_minus = _mediator_field_value(
-            source,
-            point.t,
-            _add(center, (-cutoff, 0.0, 0.0)),
-            mass=mass,
-            cutoff=cutoff,
-            mediator=mediator,
-            propagation=propagation,
-            light_speed=light_speed,
-            quadrature_order=quadrature_order,
-        )
-        gradient_x = (field_x_plus - field_x_minus) / (2.0 * cutoff)
+        gradient: list[float] = []
+        for offset in offsets:
+            field_plus = _mediator_field_value(
+                source, point.t, _add(center, offset),
+                mass=mass, cutoff=cutoff, mediator=mediator,
+                propagation=propagation, light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            field_minus = _mediator_field_value(
+                source, point.t, _sub(center, offset),
+                mass=mass, cutoff=cutoff, mediator=mediator,
+                propagation=propagation, light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            gradient.append((field_plus - field_minus) / (2.0 * cutoff))
         sign = 1.0 if mediator in {"gravity", "scalar"} else -1.0
-        shifted = _add(center, (sign * response_strength * gradient_x, 0.0, 0.0))
-        updated_points.append(TrajectoryPoint(point.t, shifted))
+        shift: Vector3 = (
+            sign * response_strength * gradient[0],
+            sign * response_strength * gradient[1],
+            sign * response_strength * gradient[2],
+        )
+        updated_points.append(TrajectoryPoint(point.t, _add(center, shift)))
     return BranchPath(label=f"{target.label}_{mediator}_backreacted", charge=target.charge, points=tuple(updated_points))
 
 
@@ -3983,4 +4154,717 @@ def simulate(
             light_speed=light_speed,
             quadrature_order=quadrature_order,
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 물리적 충실도 확장
+# ---------------------------------------------------------------------------
+
+
+def _velocity_at(branch: BranchPath, t: float) -> Vector3:
+    """branch 의 좌표시간 t 에서의 3-velocity 를 구간 기울기로 근사한다."""
+    for left, right in zip(branch.points, branch.points[1:]):
+        if left.t <= t <= right.t:
+            dt = right.t - left.t
+            if dt <= 1e-18:
+                return (0.0, 0.0, 0.0)
+            return _scale(_sub(right.position, left.position), 1.0 / dt)
+    return (0.0, 0.0, 0.0)
+
+
+def _lorentz_factor(velocity: Vector3, light_speed: float) -> float:
+    v_sq = _dot(velocity, velocity)
+    beta_sq = v_sq / (light_speed * light_speed)
+    if beta_sq >= 1.0:
+        return 1.0 / sqrt(1e-12)
+    return 1.0 / sqrt(1.0 - beta_sq)
+
+
+def _vector_polarization_factor(
+    v_a: Vector3, v_b: Vector3, *, light_speed: float,
+) -> float:
+    """spin-1 매개자의 velocity-dependent coupling 보정 (1 - v_a·v_b/c²)."""
+    return 1.0 - _dot(v_a, v_b) / (light_speed * light_speed)
+
+
+def _graviton_tensor_factor(
+    v_a: Vector3, v_b: Vector3, *, light_speed: float,
+) -> float:
+    """spin-2 매개자의 velocity-dependent coupling 보정 (1 + v_a·v_b/c²)."""
+    return 1.0 + _dot(v_a, v_b) / (light_speed * light_speed)
+
+
+def compute_proper_time_worldline(
+    branch: BranchPath,
+    *,
+    light_speed: float = 1.0,
+) -> ProperTimeWorldline:
+    proper_times: list[float] = [0.0]
+    lorentz_factors: list[float] = []
+    for left, right in zip(branch.points, branch.points[1:]):
+        dt = right.t - left.t
+        velocity = _scale(_sub(right.position, left.position), 1.0 / dt) if dt > 1e-18 else (0.0, 0.0, 0.0)
+        gamma = _lorentz_factor(velocity, light_speed)
+        lorentz_factors.append(gamma)
+        proper_times.append(proper_times[-1] + dt / gamma)
+    lorentz_factors.append(lorentz_factors[-1] if lorentz_factors else 1.0)
+    return ProperTimeWorldline(
+        branch=branch,
+        proper_times=tuple(proper_times),
+        lorentz_factors=tuple(lorentz_factors),
+    )
+
+
+def _tensor_mediated_pair_phase(
+    branch_a: BranchPath,
+    branch_b: BranchPath,
+    *,
+    mediator: Literal["scalar", "vector", "gravity"],
+    mass: float,
+    cutoff: float,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
+    light_speed: float,
+    quadrature_order: int,
+) -> float:
+    """텐서 구조를 반영한 pair phase 를 계산한다."""
+    grid = _shared_time_grid(branch_a, branch_b)
+    nodes, weights = _gauss_legendre_rule(quadrature_order)
+    phase = 0.0
+    for t_start, t_stop in zip(grid, grid[1:]):
+        midpoint = (t_start + t_stop) / 2.0
+        half_width = (t_stop - t_start) / 2.0
+        segment = 0.0
+        for node, weight in zip(nodes, weights):
+            sample_time = midpoint + half_width * node
+            v_a = _velocity_at(branch_a, sample_time)
+            v_b = _velocity_at(branch_b, sample_time)
+            if mediator == "vector":
+                tensor_factor = _vector_polarization_factor(v_a, v_b, light_speed=light_speed)
+                coupling = -branch_a.charge * branch_b.charge
+                effective_mass = mass
+            elif mediator == "gravity":
+                tensor_factor = _graviton_tensor_factor(v_a, v_b, light_speed=light_speed)
+                coupling = abs(branch_a.charge) * abs(branch_b.charge)
+                effective_mass = mass
+            else:
+                tensor_factor = 1.0
+                coupling = branch_a.charge * branch_b.charge
+                effective_mass = mass
+            field_val = _field_value_at_observation_point(
+                branch_a, sample_time, branch_b.position_at(sample_time),
+                mass=effective_mass, cutoff=cutoff, propagation=propagation,
+                light_speed=light_speed, quadrature_order=quadrature_order,
+            )
+            segment += weight * tensor_factor * field_val
+        phase -= _mediator_pair_coupling(branch_a, branch_b, mediator) * segment * half_width
+        # tensor_factor 보정을 적용한다.
+        phase_correction = 0.0
+        for node, weight in zip(nodes, weights):
+            sample_time = midpoint + half_width * node
+            v_a = _velocity_at(branch_a, sample_time)
+            v_b = _velocity_at(branch_b, sample_time)
+            if mediator == "vector":
+                correction = _vector_polarization_factor(v_a, v_b, light_speed=light_speed) - 1.0
+            elif mediator == "gravity":
+                correction = _graviton_tensor_factor(v_a, v_b, light_speed=light_speed) - 1.0
+            else:
+                correction = 0.0
+            phase_correction += weight * correction
+        phase *= (1.0 + phase_correction * half_width / max(half_width * len(nodes), 1e-12))
+    return phase
+
+
+def compute_tensor_mediated_phase_matrix(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    mediator_mass: float = 0.0,
+) -> TensorMediatedPhaseResult:
+    """spin-1/spin-2 텐서 구조와 massive mediator 를 반영한 위상 행렬을 계산한다."""
+    effective_scalar_mass = mass
+    effective_vector_mass = mediator_mass if mediator_mass > 0.0 else 0.0
+    effective_gravity_mass = mediator_mass if mediator_mass > 0.0 else 0.0
+
+    scalar_phase = compute_branch_phase_matrix(
+        branches_a, branches_b,
+        mass=effective_scalar_mass, cutoff=cutoff,
+        propagation=propagation, light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+
+    # 벡터: spin-1 편광 텐서 보정 포함
+    vector_rows: list[tuple[float, ...]] = []
+    for r, branch_a in enumerate(branches_a):
+        row: list[float] = []
+        for s, branch_b in enumerate(branches_b):
+            base = _branch_pair_phase(
+                branch_a, branch_b,
+                mass=effective_vector_mass, cutoff=cutoff,
+                propagation=propagation, light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            grid = _shared_time_grid(branch_a, branch_b)
+            nodes, weights = _gauss_legendre_rule(quadrature_order)
+            total_correction = 0.0
+            total_weight = 0.0
+            for t_start, t_stop in zip(grid, grid[1:]):
+                midpoint = (t_start + t_stop) / 2.0
+                half_width = (t_stop - t_start) / 2.0
+                for node, weight in zip(nodes, weights):
+                    sample_time = midpoint + half_width * node
+                    v_a = _velocity_at(branch_a, sample_time)
+                    v_b = _velocity_at(branch_b, sample_time)
+                    factor = _vector_polarization_factor(v_a, v_b, light_speed=light_speed)
+                    total_correction += weight * factor * half_width
+                    total_weight += weight * half_width
+            avg_factor = total_correction / max(total_weight, 1e-12)
+            row.append(-base * avg_factor)
+        vector_rows.append(tuple(row))
+    vector_phase = tuple(vector_rows)
+
+    # 중력: spin-2 텐서 보정 포함
+    gravity_rows: list[tuple[float, ...]] = []
+    for r, branch_a in enumerate(branches_a):
+        row_g: list[float] = []
+        for s, branch_b in enumerate(branches_b):
+            base = _branch_pair_phase(
+                branch_a, branch_b,
+                mass=effective_gravity_mass, cutoff=cutoff,
+                propagation=propagation, light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            # gravity coupling uses |charge|
+            charge_ratio = (abs(branch_a.charge) * abs(branch_b.charge)) / max(abs(branch_a.charge * branch_b.charge), 1e-12)
+            grid = _shared_time_grid(branch_a, branch_b)
+            nodes, weights = _gauss_legendre_rule(quadrature_order)
+            total_correction = 0.0
+            total_weight = 0.0
+            for t_start, t_stop in zip(grid, grid[1:]):
+                midpoint = (t_start + t_stop) / 2.0
+                half_width = (t_stop - t_start) / 2.0
+                for node, weight in zip(nodes, weights):
+                    sample_time = midpoint + half_width * node
+                    v_a = _velocity_at(branch_a, sample_time)
+                    v_b = _velocity_at(branch_b, sample_time)
+                    factor = _graviton_tensor_factor(v_a, v_b, light_speed=light_speed)
+                    total_correction += weight * factor * half_width
+                    total_weight += weight * half_width
+            avg_factor = total_correction / max(total_weight, 1e-12)
+            row_g.append(base * charge_ratio * avg_factor)
+        gravity_rows.append(tuple(row_g))
+    gravity_phase = tuple(gravity_rows)
+
+    return TensorMediatedPhaseResult(
+        scalar_phase=scalar_phase,
+        vector_phase=vector_phase,
+        gravity_phase=gravity_phase,
+        mediator_mass=mediator_mass,
+    )
+
+
+def compute_renormalized_phase_matrix(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    renormalization_mass: float | None = None,
+) -> RenormalizedPhaseResult:
+    """UV 정규화된 위상 행렬을 계산한다. self-energy 와 mass counterterm 을 뺀다."""
+    raw_matrix = compute_branch_phase_matrix(
+        branches_a, branches_b,
+        mass=mass, cutoff=cutoff, propagation=propagation,
+        light_speed=light_speed, quadrature_order=quadrature_order,
+    )
+    # self-energy: 각 branch 의 자기 상호작용
+    self_a = tuple(
+        _branch_pair_phase(b, b, mass=mass, cutoff=cutoff, propagation=propagation,
+                           light_speed=light_speed, quadrature_order=quadrature_order)
+        for b in branches_a
+    )
+    self_b = tuple(
+        _branch_pair_phase(b, b, mass=mass, cutoff=cutoff, propagation=propagation,
+                           light_speed=light_speed, quadrature_order=quadrature_order)
+        for b in branches_b
+    )
+    # mass counterterm: renormalization_mass 가 주어지면 free self-energy 를 빼서 보정
+    counter_a = [0.0] * len(branches_a)
+    counter_b = [0.0] * len(branches_b)
+    if renormalization_mass is not None:
+        for i, b in enumerate(branches_a):
+            counter_a[i] = _branch_pair_phase(b, b, mass=renormalization_mass, cutoff=cutoff,
+                                              propagation=propagation, light_speed=light_speed,
+                                              quadrature_order=quadrature_order)
+        for i, b in enumerate(branches_b):
+            counter_b[i] = _branch_pair_phase(b, b, mass=renormalization_mass, cutoff=cutoff,
+                                              propagation=propagation, light_speed=light_speed,
+                                              quadrature_order=quadrature_order)
+    corrections_a = tuple(0.5 * (s - c) for s, c in zip(self_a, counter_a))
+    corrections_b = tuple(0.5 * (s - c) for s, c in zip(self_b, counter_b))
+    all_corrections = corrections_a + corrections_b
+    renormalized = tuple(
+        tuple(
+            raw_matrix[r][s] - corrections_a[r] - corrections_b[s]
+            for s in range(len(branches_b))
+        )
+        for r in range(len(branches_a))
+    )
+    return RenormalizedPhaseResult(
+        raw_matrix=raw_matrix,
+        self_energy_corrections=all_corrections,
+        renormalized_matrix=renormalized,
+    )
+
+
+def compute_decoherence_model(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+    source_width: float = 0.0,
+    quadrature_order: int = 3,
+    environment_coupling: float = 0.01,
+) -> DecoherenceResult:
+    """field mode 에 대한 partial trace 로 matter 계의 decoherence 를 계산한다."""
+    pair_displacements = compute_branch_pair_displacements(
+        branches_a, branches_b, momenta,
+        field_mass=field_mass,
+        source_width_a=source_width, source_width_b=source_width,
+        quadrature_order=quadrature_order,
+    )
+    n_a = len(branches_a)
+    n_b = len(branches_b)
+    n_total = n_a * n_b
+    # coherence matrix: ρ((r,s),(r',s')) = <field_{rs}|field_{r's'}>
+    coherence: list[list[complex]] = []
+    decoherence_rates: list[float] = []
+    for r in range(n_a):
+        for s in range(n_b):
+            row: list[complex] = []
+            for rp in range(n_a):
+                for sp in range(n_b):
+                    alpha_rs = pair_displacements[r][s]
+                    alpha_rps = pair_displacements[rp][sp]
+                    diff_sq = sum(abs(a - b) ** 2 for a, b in zip(alpha_rs, alpha_rps))
+                    suppression = exp(-0.5 * diff_sq * (1.0 + environment_coupling))
+                    phase = compute_displacement_operator_phase(alpha_rs, alpha_rps)
+                    row.append(suppression * complex_exp(1j * phase))
+            coherence.append(row)
+    # decoherence rate: off-diagonal decay
+    for i in range(n_total):
+        rate = 0.0
+        for j in range(n_total):
+            if i != j:
+                rate += 1.0 - abs(coherence[i][j])
+        decoherence_rates.append(rate / max(n_total - 1, 1))
+    # purity: Tr(ρ²)
+    purity = 0.0
+    for i in range(n_total):
+        for j in range(n_total):
+            purity += abs(coherence[i][j]) ** 2
+    purity /= n_total * n_total
+    return DecoherenceResult(
+        coherence_matrix=tuple(tuple(row) for row in coherence),
+        decoherence_rates=tuple(decoherence_rates),
+        purity=purity,
+    )
+
+
+def compute_multi_body_correlation(
+    branches: tuple[BranchPath, ...],
+    *,
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "instantaneous",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> MultiBodyCorrelationResult:
+    """3체 이상의 connected correlation 위상을 계산한다."""
+    n = len(branches)
+    if n < 2:
+        raise ValueError("At least 2 branches are needed for correlation analysis.")
+    # pairwise phase matrix
+    pairwise: list[list[float]] = []
+    for i in range(n):
+        row: list[float] = []
+        for j in range(n):
+            if i == j:
+                row.append(_branch_pair_phase(branches[i], branches[i], mass=mass, cutoff=cutoff,
+                                              propagation=propagation, light_speed=light_speed,
+                                              quadrature_order=quadrature_order))
+            else:
+                row.append(_branch_pair_phase(branches[i], branches[j], mass=mass, cutoff=cutoff,
+                                              propagation=propagation, light_speed=light_speed,
+                                              quadrature_order=quadrature_order))
+        pairwise.append(row)
+    # 3-body connected correlation (cumulant)
+    three_body = 0.0
+    if n >= 3:
+        total_3 = 0.0
+        for i in range(n):
+            for j in range(i + 1, n):
+                for k in range(j + 1, n):
+                    total_3 += (pairwise[i][j] + pairwise[j][k] + pairwise[i][k]
+                                - pairwise[i][i] - pairwise[j][j] - pairwise[k][k])
+        three_body = total_3
+    total_correlation = sum(pairwise[i][j] for i in range(n) for j in range(n)) - sum(pairwise[i][i] for i in range(n))
+    return MultiBodyCorrelationResult(
+        pairwise_phases=tuple(tuple(row) for row in pairwise),
+        three_body_phase=three_body,
+        total_correlation_phase=total_correlation,
+    )
+
+
+def evolve_relativistic_backreaction(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+) -> RelativisticForceResult:
+    """Lorentz factor 를 포함한 상대론적 backreaction 으로 worldline 을 갱신한다."""
+    offsets: tuple[Vector3, ...] = ((cutoff, 0.0, 0.0), (0.0, cutoff, 0.0), (0.0, 0.0, cutoff))
+    updated_points: list[TrajectoryPoint] = []
+    proper_times: list[float] = [0.0]
+    four_velocities: list[tuple[float, ...]] = []
+    for idx, point in enumerate(target.points):
+        center = point.position
+        velocity = _velocity_at(target, point.t)
+        gamma = _lorentz_factor(velocity, light_speed)
+        gradient: list[float] = []
+        for offset in offsets:
+            fp = _mediator_field_value(
+                source, point.t, _add(center, offset),
+                mass=mass, cutoff=cutoff, mediator=mediator,
+                propagation=propagation, light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            fm = _mediator_field_value(
+                source, point.t, _sub(center, offset),
+                mass=mass, cutoff=cutoff, mediator=mediator,
+                propagation=propagation, light_speed=light_speed,
+                quadrature_order=quadrature_order,
+            )
+            gradient.append((fp - fm) / (2.0 * cutoff))
+        sign = 1.0 if mediator in {"gravity", "scalar"} else -1.0
+        effective_strength = response_strength / gamma
+        shift: Vector3 = (
+            sign * effective_strength * gradient[0],
+            sign * effective_strength * gradient[1],
+            sign * effective_strength * gradient[2],
+        )
+        updated_points.append(TrajectoryPoint(point.t, _add(center, shift)))
+        u0 = gamma * light_speed
+        four_velocities.append((u0, gamma * velocity[0], gamma * velocity[1], gamma * velocity[2]))
+        if idx > 0:
+            dt = point.t - target.points[idx - 1].t
+            proper_times.append(proper_times[-1] + dt / gamma)
+    return RelativisticForceResult(
+        updated_branch=BranchPath(
+            label=f"{target.label}_relativistic_backreacted",
+            charge=target.charge,
+            points=tuple(updated_points),
+        ),
+        proper_times=tuple(proper_times),
+        four_velocities=tuple(four_velocities),
+    )
+
+
+def compute_entanglement_measures(
+    phase_matrix: tuple[tuple[float, ...], ...],
+    *,
+    overlap_amplitudes: tuple[tuple[float, ...], ...] | None = None,
+) -> EntanglementMeasures:
+    """위상 행렬로부터 von Neumann entropy, negativity, witness, visibility 를 계산한다.
+
+    최소 2×2 phase matrix 가 필요하다. 더 큰 행렬의 경우 좌상단 2×2 를 사용한다.
+    overlap_amplitudes 가 주어지면 vacuum suppression 으로 density matrix 를 구성한다.
+    """
+    if len(phase_matrix) < 2 or len(phase_matrix[0]) < 2:
+        raise ValueError("phase_matrix must be at least 2x2.")
+    # 2-qubit density matrix 구성 (|00>, |01>, |10>, |11> basis)
+    theta = phase_matrix[0][0] - phase_matrix[0][1] - phase_matrix[1][0] + phase_matrix[1][1]
+    # overlap amplitudes (vacuum suppression)
+    if overlap_amplitudes is not None and len(overlap_amplitudes) >= 2 and len(overlap_amplitudes[0]) >= 2:
+        gamma_val = max(min(overlap_amplitudes[0][0], 1.0), 0.0)
+    else:
+        gamma_val = 1.0
+    # effective 2-qubit state: 1/2 (|00> + e^{iθ}|11>)(h.c.)  with decoherence factor gamma
+    cos_theta = exp(0.0) * gamma_val  # for visibility
+    from math import cos, sin, log
+    # density matrix in {|00>,|01>,|10>,|11>} basis for maximally entangled-like state
+    rho = np.zeros((4, 4), dtype=complex)
+    rho[0, 0] = 0.5
+    rho[3, 3] = 0.5
+    rho[0, 3] = 0.5 * gamma_val * complex_exp(1j * theta)
+    rho[3, 0] = 0.5 * gamma_val * complex_exp(-1j * theta)
+    # von Neumann entropy
+    eigenvalues = np.linalg.eigvalsh(rho)
+    eigenvalues = np.clip(eigenvalues.real, 1e-30, None)
+    von_neumann = -sum(float(ev * np.log(ev)) for ev in eigenvalues if ev > 1e-30)
+    # partial transpose (transpose over B subsystem)
+    rho_pt = np.zeros((4, 4), dtype=complex)
+    for i in range(2):
+        for j in range(2):
+            for k in range(2):
+                for l in range(2):
+                    rho_pt[2 * i + k, 2 * j + l] = rho[2 * i + l, 2 * j + k]
+    pt_eigenvalues = np.linalg.eigvalsh(rho_pt)
+    negativity = float(sum(abs(ev) for ev in pt_eigenvalues if ev < -1e-15)) / 2.0 + max(0.0, float(sum(-ev for ev in pt_eigenvalues if ev < -1e-15)))
+    negativity = float(sum(max(0.0, -ev) for ev in pt_eigenvalues))
+    # witness: W = 1/2 - |ρ_{03}|
+    witness = 0.5 - abs(float(rho[0, 3].real ** 2 + rho[0, 3].imag ** 2) ** 0.5)
+    # visibility: 2|ρ_{03}|
+    visibility = 2.0 * abs(complex(rho[0, 3]))
+    return EntanglementMeasures(
+        von_neumann_entropy=von_neumann,
+        negativity=negativity,
+        witness_value=witness,
+        visibility=min(visibility, 1.0),
+    )
+
+
+def compute_mode_occupation_distribution(
+    mode_amplitudes: tuple[complex, ...],
+    momenta: tuple[Vector3, ...],
+    *,
+    field_mass: float,
+) -> ModeOccupationDistribution:
+    """coherent state 의 mode 별 occupation number 분포를 계산한다."""
+    if len(mode_amplitudes) != len(momenta):
+        raise ValueError("mode_amplitudes and momenta must have the same length.")
+    occupations = tuple(abs(alpha) ** 2 for alpha in mode_amplitudes)
+    total = sum(occupations)
+    probabilities = tuple(n / max(total, 1e-30) for n in occupations)
+    return ModeOccupationDistribution(
+        mode_occupations=occupations,
+        total_occupation=total,
+        mode_probabilities=probabilities,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PDE/격자 개선
+# ---------------------------------------------------------------------------
+
+
+def solve_finite_difference_kg(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    light_speed: float = 1.0,
+    boundary: Literal["absorbing", "reflecting", "periodic"] = "absorbing",
+) -> FiniteDifferencePdeResult:
+    """유한차분 leapfrog 방법으로 Klein-Gordon 방정식을 직접 적분한다.
+
+    1D slice (x축 방향)를 가정하고 Courant 조건을 확인한다.
+    """
+    if len(time_slices) < 2:
+        raise ValueError("At least 2 time slices are required.")
+    if len(spatial_points) < 2:
+        raise ValueError("At least 2 spatial points are required.")
+
+    n_space = len(spatial_points)
+    dx_values = [_norm(_sub(spatial_points[i + 1], spatial_points[i])) for i in range(n_space - 1)]
+    dx = min(dx_values) if dx_values else 1.0
+    dt_values = [time_slices[i + 1] - time_slices[i] for i in range(len(time_slices) - 1)]
+    dt = min(dt_values) if dt_values else 1.0
+    courant = light_speed * dt / max(dx, 1e-12)
+
+    # 초기 조건: t=0 에서 source 의 field 를 Yukawa kernel 로 설정
+    phi_prev = [0.0] * n_space
+    phi_curr = [0.0] * n_space
+    for j in range(n_space):
+        distance = _norm(_sub(spatial_points[j], source.position_at(time_slices[0])))
+        phi_curr[j] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
+
+    all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
+    c2 = light_speed * light_speed
+    m2 = mass * mass
+
+    for ti in range(1, len(time_slices)):
+        current_dt = time_slices[ti] - time_slices[ti - 1]
+        phi_next = [0.0] * n_space
+        for j in range(n_space):
+            # Laplacian (1D finite difference)
+            if j == 0:
+                if boundary == "periodic":
+                    laplacian = (phi_curr[1] - 2.0 * phi_curr[0] + phi_curr[n_space - 1]) / (dx * dx)
+                elif boundary == "reflecting":
+                    laplacian = (phi_curr[1] - phi_curr[0]) / (dx * dx)
+                else:  # absorbing: Sommerfeld 근사
+                    laplacian = (phi_curr[1] - 2.0 * phi_curr[0]) / (dx * dx)
+            elif j == n_space - 1:
+                if boundary == "periodic":
+                    laplacian = (phi_curr[0] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
+                elif boundary == "reflecting":
+                    laplacian = (phi_curr[j - 1] - phi_curr[j]) / (dx * dx)
+                else:  # absorbing
+                    laplacian = (phi_curr[j - 1] - 2.0 * phi_curr[j]) / (dx * dx)
+            else:
+                laplacian = (phi_curr[j + 1] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
+
+            # source density
+            src_pos = source.position_at(min(max(time_slices[ti], source.time_window[0]), source.time_window[1]))
+            src_distance = _norm(_sub(spatial_points[j], src_pos))
+            source_density = source.charge * exp(-0.5 * src_distance * src_distance)
+
+            # leapfrog: φ(t+dt) = 2φ(t) - φ(t-dt) + dt²(c²∇²φ - m²φ + ρ)
+            phi_next[j] = (2.0 * phi_curr[j] - phi_prev[j]
+                           + current_dt * current_dt * (c2 * laplacian - m2 * phi_curr[j] + source_density))
+
+        # absorbing boundary: Sommerfeld radiation condition ∂φ/∂t + c ∂φ/∂n = 0
+        if boundary == "absorbing" and n_space >= 2:
+            phi_next[0] = phi_curr[0] + light_speed * current_dt * (phi_curr[1] - phi_curr[0]) / dx
+            phi_next[-1] = phi_curr[-1] - light_speed * current_dt * (phi_curr[-1] - phi_curr[-2]) / dx
+
+        phi_prev = list(phi_curr)
+        phi_curr = phi_next
+        all_slices.append(tuple(phi_curr))
+
+    return FiniteDifferencePdeResult(
+        field_values=tuple(all_slices),
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        courant_number=courant,
+    )
+
+
+def solve_physical_lattice_dynamics(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    method: Literal["leapfrog", "verlet"] = "leapfrog",
+    damping_rate: float = 0.0,
+) -> PhysicalLatticeDynamicsResult:
+    """물리적 시간 stepper (leapfrog/Verlet)로 격자 장 역학을 계산한다.
+
+    선택적으로 radiation damping (2γ ∂φ/∂t) 을 포함한다.
+    """
+    if len(time_slices) < 2:
+        raise ValueError("At least 2 time slices needed.")
+    n_space = len(spatial_points)
+    base_lattice = solve_field_lattice(
+        source, time_slices=time_slices, spatial_points=spatial_points,
+        mass=mass, mediator=mediator, cutoff=cutoff, propagation=propagation,
+        light_speed=light_speed, quadrature_order=quadrature_order,
+    )
+    # 시간별 field value 추출
+    time_field: list[list[float]] = []
+    for ti in range(len(time_slices)):
+        start = ti * n_space
+        time_field.append([base_lattice.samples[start + j].value for j in range(n_space)])
+
+    # leapfrog/Verlet time stepping with optional radiation damping
+    evolved: list[list[float]] = [list(time_field[0])]
+    if len(time_slices) >= 2:
+        evolved.append(list(time_field[1]))
+    for ti in range(2, len(time_slices)):
+        dt = time_slices[ti] - time_slices[ti - 1]
+        new_slice = [0.0] * n_space
+        for j in range(n_space):
+            # source-driven acceleration
+            acceleration = time_field[ti][j] - evolved[-1][j]
+            # damping: exp(-γ dt) 로 이전 속도를 감쇠시킨다
+            damping_factor = exp(-damping_rate * dt) if damping_rate > 0.0 else 1.0
+            new_slice[j] = (evolved[-1][j]
+                            + damping_factor * (evolved[-1][j] - evolved[-2][j])
+                            + acceleration * dt * dt)
+        evolved.append(new_slice)
+
+    lattices: list[FieldLattice] = []
+    for ti, time_val in enumerate(time_slices):
+        samples = tuple(
+            FieldSample(t=time_val, position=spatial_points[j], value=evolved[ti][j])
+            for j in range(n_space)
+        )
+        lattices.append(FieldLattice(samples=samples, time_slices=(time_val,), spatial_points=spatial_points))
+
+    dt_avg = (time_slices[-1] - time_slices[0]) / max(len(time_slices) - 1, 1)
+    return PhysicalLatticeDynamicsResult(
+        lattices=tuple(lattices),
+        time_step=dt_avg,
+        method=method,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lebedev 구면 quadrature
+# ---------------------------------------------------------------------------
+
+
+def compute_lebedev_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    radial_quadrature_order: int = 5,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+    lebedev_order: Literal[6, 14, 26] = 14,
+) -> LebedevQuadratureResult:
+    """Lebedev 구면 quadrature 가중치를 써서 연속 운동량 적분의 각도 평균을 계산한다."""
+    if momentum_cutoff <= 0.0:
+        raise ValueError("momentum_cutoff must be positive.")
+    if lebedev_order == 6:
+        directions = _AXIS_DIRECTIONS
+        weights = _LEBEDEV_WEIGHTS_6
+    elif lebedev_order == 14:
+        directions = _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS
+        weights = _LEBEDEV_WEIGHTS_14
+    else:
+        directions = _AXIS_DIRECTIONS + _EDGE_DIRECTIONS + _DIAGONAL_DIRECTIONS
+        weights = _LEBEDEV_WEIGHTS_26
+
+    radial_nodes, radial_weights = _gauss_legendre_rule(radial_quadrature_order)
+    amplitudes: list[complex] = []
+    for branch_idx, branch_item in enumerate(branches):
+        total = 0.0j
+        midpoint = momentum_cutoff / 2.0
+        half_width = momentum_cutoff / 2.0
+        for radial_node, radial_weight in zip(radial_nodes, radial_weights):
+            momentum_radius = midpoint + half_width * radial_node
+            angular_total = 0.0j
+            for direction, leb_weight in zip(directions, weights):
+                momentum = _scale(direction, momentum_radius)
+                omega = _mode_energy(momentum, field_mass)
+                contribution = (-1j / sqrt(2.0 * omega)) * _branch_time_integral(
+                    branch_item,
+                    lambda sample_time, mode=momentum, frequency=omega: (
+                        complex_exp(1j * frequency * sample_time)
+                        * _source_form_factor(branch_item, mode, sample_time, source_width)
+                    ),
+                    quadrature_order=time_quadrature_order,
+                )
+                angular_total += leb_weight * contribution
+            total += radial_weight * (momentum_radius * momentum_radius) * angular_total
+        amplitudes.append(4.0 * pi * total * half_width)
+    return LebedevQuadratureResult(
+        amplitudes=tuple(amplitudes),
+        quadrature_order=lebedev_order,
+        direction_count=len(directions),
     )

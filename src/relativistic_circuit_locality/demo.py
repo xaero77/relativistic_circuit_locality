@@ -26,6 +26,17 @@ from .scalar_field import (
     solve_exact_dynamics_surrogate,
     solve_high_fidelity_pde_bundle,
     CompositeBranch,
+    compute_proper_time_worldline,
+    compute_tensor_mediated_phase_matrix,
+    compute_renormalized_phase_matrix,
+    compute_decoherence_model,
+    compute_multi_body_correlation,
+    evolve_relativistic_backreaction,
+    compute_entanglement_measures,
+    compute_mode_occupation_distribution,
+    solve_finite_difference_kg,
+    solve_physical_lattice_dynamics,
+    compute_lebedev_displacement_amplitudes,
 )
 
 
@@ -238,6 +249,69 @@ def main() -> None:
     print("complete_state_relative_phase_matrix =", complete_state.multimode.relative_phase_matrix)
     print("exact_dynamics_retarded_sample_count =", len(exact_dynamics.retarded_green.samples))
     print("research_grade_exact_dynamics_sample_count =", len(research_grade.exact_dynamics.retarded_green.samples))
+
+    # --- 새 기능 데모 ---
+    proper_time = compute_proper_time_worldline(branches_a[0])
+    print("proper_time_A0 =", proper_time.proper_times)
+    print("lorentz_factors_A0 =", proper_time.lorentz_factors)
+    tensor_phase = compute_tensor_mediated_phase_matrix(
+        branches_a, branches_b, mass=0.5, propagation="instantaneous",
+    )
+    print("tensor_scalar_phase =", tensor_phase.scalar_phase)
+    print("tensor_vector_phase =", tensor_phase.vector_phase)
+    print("tensor_gravity_phase =", tensor_phase.gravity_phase)
+    renormalized = compute_renormalized_phase_matrix(
+        branches_a, branches_b, mass=0.5, cutoff=0.1,
+    )
+    print("renormalized_phase =", renormalized.renormalized_matrix)
+    print("self_energy_corrections =", renormalized.self_energy_corrections)
+    decoherence = compute_decoherence_model(
+        branches_a[:1], branches_b[:1], momenta, field_mass=0.5,
+    )
+    print("decoherence_purity =", round(decoherence.purity, 6))
+    multi_body = compute_multi_body_correlation(
+        (branches_a[0], branches_a[1], branches_b[0]), mass=0.5,
+    )
+    print("three_body_phase =", round(multi_body.three_body_phase, 6))
+    relativistic = evolve_relativistic_backreaction(
+        branches_a[0], branches_b[0], mass=0.5, propagation="instantaneous", response_strength=0.1,
+    )
+    print("relativistic_backreaction_proper_times =", relativistic.proper_times)
+    entanglement = compute_entanglement_measures(instantaneous.phase_matrix)
+    print("von_neumann_entropy =", round(entanglement.von_neumann_entropy, 6))
+    print("negativity =", round(entanglement.negativity, 6))
+    print("witness_value =", round(entanglement.witness_value, 6))
+    print("visibility =", round(entanglement.visibility, 6))
+    mode_dist = compute_mode_occupation_distribution(
+        displacement_a[0], momenta, field_mass=0.5,
+    )
+    print("mode_occupations =", mode_dist.mode_occupations)
+    print("mode_probabilities =", tuple(round(p, 4) for p in mode_dist.mode_probabilities))
+    fd_pde = solve_finite_difference_kg(
+        branches_a[0],
+        time_slices=(0.0, 1.0, 2.0, 3.0, 4.0),
+        spatial_points=((-2.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        mass=0.5,
+        boundary="absorbing",
+    )
+    print("fd_pde_courant =", round(fd_pde.courant_number, 4))
+    print("fd_pde_slices =", len(fd_pde.field_values))
+    phys_lattice = solve_physical_lattice_dynamics(
+        branches_a[0],
+        time_slices=(0.0, 1.0, 2.0, 3.0, 4.0),
+        spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        mass=0.5,
+        propagation="instantaneous",
+        method="leapfrog",
+        damping_rate=0.1,
+    )
+    print("physical_lattice_method =", phys_lattice.method)
+    print("physical_lattice_step =", phys_lattice.time_step)
+    lebedev = compute_lebedev_displacement_amplitudes(
+        branches_a, field_mass=0.5, momentum_cutoff=1.0, lebedev_order=14,
+    )
+    print("lebedev_direction_count =", lebedev.direction_count)
+    print("lebedev_amplitudes =", lebedev.amplitudes)
 
 
 if __name__ == "__main__":

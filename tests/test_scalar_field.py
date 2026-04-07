@@ -11,6 +11,17 @@ from relativistic_circuit_locality.scalar_field import (
     GeneralGaussianState,
     ModeSuperpositionState,
     TrajectoryPoint,
+    compute_proper_time_worldline,
+    compute_tensor_mediated_phase_matrix,
+    compute_renormalized_phase_matrix,
+    compute_decoherence_model,
+    compute_multi_body_correlation,
+    evolve_relativistic_backreaction,
+    compute_entanglement_measures,
+    compute_mode_occupation_distribution,
+    solve_finite_difference_kg,
+    solve_physical_lattice_dynamics,
+    compute_lebedev_displacement_amplitudes,
     compute_adaptive_continuum_displacement_amplitudes,
     compute_anisotropic_sampled_spacetime_phase,
     analyze_branch_pair_coherent_overlap,
@@ -1040,6 +1051,241 @@ class ScalarFieldTests(unittest.TestCase):
         matrix = compute_composite_phase_matrix((composite_left,), (composite_right,), mass=0.5)
         expected = compute_mediated_phase_matrix((a0,), (b0,), mass=0.5)[0][0] + compute_mediated_phase_matrix((a1,), (b0,), mass=0.5)[0][0]
         self.assertAlmostEqual(matrix[0][0], expected)
+
+
+    # --- 수치 알고리즘 개선 ---
+
+    def test_gauss_legendre_order_6_produces_result(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        matrix = compute_branch_phase_matrix((source,), (target,), mass=0.5, quadrature_order=6)
+        self.assertNotEqual(matrix[0][0], 0.0)
+
+    def test_gauss_legendre_order_10_produces_result(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        matrix = compute_branch_phase_matrix((source,), (target,), mass=0.5, quadrature_order=10)
+        self.assertNotEqual(matrix[0][0], 0.0)
+
+    def test_3d_backreaction_shifts_off_axis_target(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 1.0, 0.0)), (2.0, (1.0, 1.0, 0.0))])
+        updated = evolve_backreacted_branch(source, target, mass=0.5, propagation="instantaneous", response_strength=0.1)
+        self.assertNotEqual(updated.points[0].position[0], target.points[0].position[0])
+        self.assertNotEqual(updated.points[0].position[1], target.points[0].position[1])
+
+    def test_lebedev_quadrature_returns_amplitudes(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=14,
+        )
+        self.assertEqual(result.direction_count, 14)
+        self.assertEqual(result.quadrature_order, 14)
+        self.assertEqual(len(result.amplitudes), 1)
+
+    def test_lebedev_26_more_directions_than_14(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        r14 = compute_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=14,
+        )
+        r26 = compute_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=26,
+        )
+        self.assertGreater(r26.direction_count, r14.direction_count)
+
+    # --- 물리적 충실도 확장 ---
+
+    def test_proper_time_worldline_static_branch(self) -> None:
+        b = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_proper_time_worldline(b, light_speed=1.0)
+        self.assertAlmostEqual(result.proper_times[-1], 2.0)
+        self.assertAlmostEqual(result.lorentz_factors[0], 1.0)
+
+    def test_proper_time_worldline_moving_branch_has_time_dilation(self) -> None:
+        b = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = compute_proper_time_worldline(b, light_speed=1.0)
+        self.assertLess(result.proper_times[-1], 2.0)
+        self.assertGreater(result.lorentz_factors[0], 1.0)
+
+    def test_tensor_mediated_phase_returns_all_three_mediators(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = compute_tensor_mediated_phase_matrix(
+            (source,), (target,), mass=0.5, propagation="instantaneous",
+        )
+        self.assertEqual(len(result.scalar_phase), 1)
+        self.assertEqual(len(result.vector_phase), 1)
+        self.assertEqual(len(result.gravity_phase), 1)
+        self.assertNotEqual(result.scalar_phase[0][0], 0.0)
+
+    def test_tensor_mediated_massive_mediator_differs(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        massless = compute_tensor_mediated_phase_matrix(
+            (source,), (target,), mass=0.5, propagation="instantaneous", mediator_mass=0.0,
+        )
+        massive = compute_tensor_mediated_phase_matrix(
+            (source,), (target,), mass=0.5, propagation="instantaneous", mediator_mass=1.0,
+        )
+        self.assertNotAlmostEqual(massless.vector_phase[0][0], massive.vector_phase[0][0])
+
+    def test_renormalized_phase_matrix_subtracts_self_energy(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = compute_renormalized_phase_matrix(
+            (source,), (target,), mass=0.5, cutoff=0.1,
+        )
+        self.assertNotEqual(result.raw_matrix[0][0], result.renormalized_matrix[0][0])
+        self.assertGreater(len(result.self_energy_corrections), 0)
+
+    def test_renormalized_with_mass_counterterm(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        without = compute_renormalized_phase_matrix(
+            (source,), (target,), mass=0.5, cutoff=0.1,
+        )
+        with_counter = compute_renormalized_phase_matrix(
+            (source,), (target,), mass=0.5, cutoff=0.1, renormalization_mass=0.0,
+        )
+        self.assertNotAlmostEqual(without.self_energy_corrections[0], with_counter.self_energy_corrections[0])
+
+    def test_decoherence_model_returns_coherence_and_purity(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        momenta = ((0.5, 0.0, 0.0), (0.0, 0.5, 0.0))
+        result = compute_decoherence_model(
+            (source,), (target,), momenta, field_mass=0.5, environment_coupling=0.1,
+        )
+        self.assertGreater(result.purity, 0.0)
+        self.assertLessEqual(result.purity, 1.0)
+        self.assertEqual(len(result.decoherence_rates), 1)
+
+    def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
+        a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        b = branch("B", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        c = branch("C", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = compute_multi_body_correlation((a, b, c), mass=0.5)
+        self.assertNotEqual(result.total_correlation_phase, 0.0)
+        self.assertNotEqual(result.three_body_phase, 0.0)
+        self.assertEqual(len(result.pairwise_phases), 3)
+
+    def test_relativistic_backreaction_returns_proper_times(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = evolve_relativistic_backreaction(
+            source, target, mass=0.5, propagation="instantaneous", response_strength=0.1,
+        )
+        self.assertNotEqual(result.updated_branch.points[0].position, target.points[0].position)
+        self.assertEqual(len(result.proper_times), 2)
+        self.assertEqual(len(result.four_velocities), 2)
+
+    # --- 얽힘 진단 확장 ---
+
+    def test_entanglement_measures_returns_all_quantities(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        source2 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target2 = branch("B1", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        matrix = compute_branch_phase_matrix((source, source2), (target, target2), mass=0.5)
+        result = compute_entanglement_measures(matrix)
+        self.assertGreaterEqual(result.von_neumann_entropy, 0.0)
+        self.assertGreaterEqual(result.negativity, 0.0)
+        self.assertLessEqual(result.witness_value, 0.5)
+        self.assertGreaterEqual(result.visibility, 0.0)
+        self.assertLessEqual(result.visibility, 1.0)
+
+    def test_entanglement_visibility_is_maximal_for_equal_separation(self) -> None:
+        s0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        s1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        t0 = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        t1 = branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        matrix = compute_branch_phase_matrix((s0, s1), (t0, t1), mass=0.5)
+        result = compute_entanglement_measures(matrix)
+        self.assertGreater(result.visibility, 0.0)
+
+    def test_mode_occupation_distribution_sums_correctly(self) -> None:
+        amplitudes = (0.5 + 0.3j, 0.1 - 0.2j, 0.4 + 0.0j)
+        momenta = ((0.5, 0.0, 0.0), (0.0, 0.5, 0.0), (0.0, 0.0, 0.5))
+        result = compute_mode_occupation_distribution(amplitudes, momenta, field_mass=0.5)
+        self.assertEqual(len(result.mode_occupations), 3)
+        self.assertAlmostEqual(result.total_occupation, sum(result.mode_occupations))
+        self.assertAlmostEqual(sum(result.mode_probabilities), 1.0)
+
+    # --- PDE/격자 개선 ---
+
+    def test_finite_difference_kg_produces_field(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.5, 1.0, 1.5),
+            spatial_points=((-2.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            light_speed=1.0,
+            boundary="absorbing",
+        )
+        self.assertEqual(len(result.field_values), 4)
+        self.assertEqual(len(result.field_values[0]), 5)
+        self.assertGreater(result.courant_number, 0.0)
+
+    def test_finite_difference_kg_periodic_boundary(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.5, 1.0),
+            spatial_points=((-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary="periodic",
+        )
+        self.assertEqual(len(result.field_values), 3)
+
+    def test_finite_difference_kg_reflecting_boundary(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.5, 1.0),
+            spatial_points=((-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary="reflecting",
+        )
+        self.assertEqual(len(result.field_values), 3)
+
+    def test_physical_lattice_dynamics_leapfrog(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        result = solve_physical_lattice_dynamics(
+            source,
+            time_slices=(0.0, 1.0, 2.0, 3.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+            method="leapfrog",
+        )
+        self.assertEqual(len(result.lattices), 4)
+        self.assertEqual(result.method, "leapfrog")
+        self.assertGreater(result.time_step, 0.0)
+
+    def test_physical_lattice_dynamics_with_damping(self) -> None:
+        # 움직이는 source 를 써서 field 에 시간 변화를 만든다.
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.5, (1.0, 0.0, 0.0)), (5.0, (0.0, 0.0, 0.0))])
+        slices = tuple(i * 0.5 for i in range(11))
+        undamped = solve_physical_lattice_dynamics(
+            source,
+            time_slices=slices,
+            spatial_points=((2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+            damping_rate=0.0,
+        )
+        damped = solve_physical_lattice_dynamics(
+            source,
+            time_slices=slices,
+            spatial_points=((2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+            damping_rate=2.0,
+        )
+        last_undamped = undamped.lattices[-1].samples[0].value
+        last_damped = damped.lattices[-1].samples[0].value
+        self.assertNotAlmostEqual(last_undamped, last_damped)
 
 
 if __name__ == "__main__":

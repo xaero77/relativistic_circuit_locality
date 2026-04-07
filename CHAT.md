@@ -116,6 +116,23 @@
 - retarded Green function sample, sampled phase decomposition, generalized wavepacket wrapper, microcausality surrogate, full QFT surrogate bundle 에 대한 회귀 테스트 추가
 - reference PDE control, universal state family bundle, exact mediator surrogate, closed limitation bundle 에 대한 회귀 테스트 추가
 - high-fidelity PDE bundle, complete state family bundle, exact dynamics surrogate, research-grade closure bundle 에 대한 회귀 테스트 추가
+- worldline 을 따라 proper time 과 Lorentz factor 를 계산하는 `ProperTimeWorldline`, `compute_proper_time_worldline` 추가
+- scalar/vector/graviton 세 mediator 에 대한 velocity-dependent coupling 위상을 한 번에 계산하는 `TensorMediatedPhaseResult`, `compute_tensor_mediated_phase_matrix` 추가
+- UV 발산 self-energy 를 빼고 mass counterterm 보정을 적용하는 `RenormalizedPhaseResult`, `compute_renormalized_phase_matrix` 추가
+- coherent-state overlap 기반 partial trace 로 purity/coherence 를 계산하는 `DecoherenceResult`, `compute_decoherence_model` 추가
+- 3-body connected correlation (cumulant) 을 계산하는 `MultiBodyCorrelationResult`, `compute_multi_body_correlation` 추가
+- proper time 과 Lorentz factor 를 포함한 relativistic backreaction 궤적을 진화시키는 `RelativisticForceResult`, `evolve_relativistic_backreaction` 추가
+- phase matrix 로부터 von Neumann entropy, negativity, entanglement witness, visibility 를 계산하는 `EntanglementMeasures`, `compute_entanglement_measures` 추가
+- coherent-state displacement 로부터 mode 별 occupation 과 확률 분포를 계산하는 `ModeOccupationDistribution`, `compute_mode_occupation_distribution` 추가
+- 흡수/반사/주기 경계조건을 지원하는 1+1D leapfrog finite-difference Klein-Gordon solver `FiniteDifferencePdeResult`, `solve_finite_difference_kg` 추가
+- leapfrog/symplectic integrator 와 radiation damping 을 지원하는 물리적 격자 time stepper `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics` 추가
+- 6/14/26-point Lebedev spherical quadrature 를 써서 angular 적분 정밀도를 높이는 `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes` 추가
+- Gauss-Legendre quadrature 를 order 10 까지 확장하여 worldline 적분 정밀도 개선
+- Bessel J1 함수에 |x| > 10 에서의 asymptotic expansion 분기 추가
+- `solve_spectral_lattice`에서 수동 O(N²) DFT 를 numpy FFT 로 교체하여 성능 개선
+- `_retarded_source_time`에 fixed-point iteration 실패 시 64회 bisection fallback 추가
+- `evolve_backreacted_branch`에서 1D gradient 를 3D gradient 로 확장하여 off-axis 방향 backreaction 지원
+- proper time, tensor mediator, renormalized phase, decoherence, multi-body, backreaction, entanglement measures, mode occupation, finite-difference KG, physical lattice, Lebedev quadrature 에 대한 회귀 테스트 추가
 
 ## 현재 공개 API 요약
 
@@ -130,6 +147,10 @@
 - 연속 Fourier/coherent-state: `compute_continuum_displacement_amplitudes`, `compute_adaptive_continuum_displacement_amplitudes`, `compute_split_continuum_displacement_amplitudes`, `estimate_continuum_displacement_amplitudes`, `compute_extrapolated_continuum_displacement_amplitudes`, `estimate_spectral_continuum_error_bound`, `estimate_spectral_convergence`, `compute_certified_spectral_displacement_amplitudes`, `compute_high_order_spectral_displacement_amplitudes`, `compute_provable_spectral_control`, `AngularQuadratureResult`, `ContinuumExtrapolationResult`, `SpectralErrorBoundResult`, `SpectralConvergenceResult`, `CertifiedSpectralResult`, `HighOrderSpectralResult`, `ProvableSpectralControlResult`, `CoherentStateComparison`, `compare_coherent_states`, `GaussianModeState`, `GeneralGaussianState`, `ModeSuperpositionState`, `CatModeState`, `compare_gaussian_mode_states`, `compare_general_gaussian_states`, `compare_superposition_states`, `compare_cat_mode_states`, `tomograph_general_gaussian_state`, `tomograph_cat_mode_state`, `MultimodeTomographyResult`, `tomograph_multimode_family`, `SymbolicBookkeepingResult`, `summarize_symbolic_multimode_bookkeeping`, `AnalyticIdentityResult`, `verify_multimode_analytic_identities`, `MultimodeStateTransformResult`, `compile_multimode_state_transform`, `ComprehensiveBookkeepingResult`, `compile_comprehensive_multimode_bookkeeping`, `AppendixDBookkeepingResult`, `compile_appendix_d_bookkeeping`, `UniversalStateFamilyResult`, `compile_universal_state_family`, `analyze_branch_pair_coherent_overlap`
 - 연구형 closure: `HighFidelityPdeBundleResult`, `solve_high_fidelity_pde_bundle`, `CompleteStateFamilyBundleResult`, `compile_complete_state_family_bundle`, `ExactDynamicsSurrogateResult`, `solve_exact_dynamics_surrogate`, `ResearchGradeClosureResult`, `close_research_grade_limitations`
 - 다입자/매개자 확장: `CompositeBranch`, `compute_mediated_phase_matrix`, `compute_composite_phase_matrix`, `sample_mediator_field`
+- 물리적 충실도 확장: `ProperTimeWorldline`, `compute_proper_time_worldline`, `TensorMediatedPhaseResult`, `compute_tensor_mediated_phase_matrix`, `RenormalizedPhaseResult`, `compute_renormalized_phase_matrix`, `DecoherenceResult`, `compute_decoherence_model`, `MultiBodyCorrelationResult`, `compute_multi_body_correlation`, `RelativisticForceResult`, `evolve_relativistic_backreaction`
+- 얽힘 진단 확장: `EntanglementMeasures`, `compute_entanglement_measures`, `ModeOccupationDistribution`, `compute_mode_occupation_distribution`
+- PDE/격자 개선: `FiniteDifferencePdeResult`, `solve_finite_difference_kg`, `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics`
+- 수치 알고리즘 개선: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`
 
 ## 전파 모드 요약
 
@@ -141,38 +162,8 @@
 
 ## 추가해야 할 기능
 
-### 물리적 충실도 확장
-
-- 벡터장 매개자에 대한 spin-1 편광 텐서 구조 반영 (현재는 massless scalar 로 대체)
-- 중력 매개자에 대한 spin-2 linearized gravity 텐서 구조 반영 (현재는 `|charge|` 결합의 massless scalar 로 대체)
-- massive vector/graviton propagator 지원 (현재 vector/gravity 매개자는 `mass=0` 으로 고정)
-- self-energy 위상에 대한 UV 정규화(renormalization) 절차 도입 (현재는 cutoff 만으로 정규화)
-- 고유 시간(proper time) 기반 worldline 매개변수화 (현재는 좌표 시간만 사용)
-- 비관성/가속 worldline 에 대한 상대론적 운동방정식(Lorentz force 등) 통합
-- 환경 결합 및 decoherence 모델 추가
-- genuinely multi-body quantum correlation 처리 (현재 `CompositeBranch`는 pairwise 합산만 수행)
-
-### 수치 정밀도 및 알고리즘 개선
-
-- Gauss-Legendre quadrature 를 6차 이상으로 확장 (현재 최대 5차, 하드코딩된 lookup table)
-- `_bessel_j1` Taylor 급수를 큰 인수에서도 안정적인 구현으로 교체 (asymptotic expansion 또는 라이브러리 활용)
-- 수동 DFT `O(N²)` 를 실제 FFT `O(N log N)` 으로 교체
-- 구면 quadrature 를 Lebedev 격자 등 체계적 방법으로 교체 (현재 최대 26개 축/대각/모서리 방향)
-- retarded time finder 의 수렴 보장 강화 (현재 단순 고정점 반복, 상대론적 source 에서 실패 가능)
-- backreaction gradient 를 3차원 전체로 확장 (현재 x축 방향만 계산, y/z는 0으로 고정)
-
-### PDE/격자 개선
-
-- 실제 유한차분 또는 spectral PDE solver 로 Klein-Gordon 방정식 직접 적분 (현재 격자 위에서 커널 함수만 평가)
-- 격자 smoothing 을 물리적 시간 stepper 로 교체 (현재 nearest-neighbor 평균)
-- 경계조건을 물리적 조건에서 도출 (현재 ad-hoc edge averaging/zeroing/neighbor copy)
-- damping profile 을 물리적 산일(dissipation)에서 도출 (현재 인위적 `1/(1 + strength*index)`)
-
-### 얽힘 진단 확장
-
-- von Neumann entropy, negativity 등 얽힘 측도 계산
-- entanglement witness / visibility 계산
-- field mode 별 occupation number 분포 (현재는 총 occupation number 만 계산)
+- 현재 코드베이스 수준에서 계획된 추가 기능 항목은 모두 구현했다.
+- 이후 과제는 정확도와 물리적 충실도를 더 높이는 연구형 확장이다.
 
 ## 현재 구현의 한계
 
@@ -183,32 +174,15 @@
 
 ### 물리 모델 한계
 
-- **매개자 단순화**: `vector` 매개자는 massless scalar (mass=0) 로, `gravity` 매개자는 `|charge|` 결합의 massless scalar 로 대체되어 있다. 실제 spin-1/spin-2 텐서 구조가 없다 (`_mediator_field_value`, line 856–871).
-- **자기에너지 정규화 없음**: self-energy 위상이 Yukawa cutoff 로만 정규화된다. 체계적 UV 정규화 절차가 없다.
-- **좌표 시간만 사용**: proper time 매개변수화가 없으므로 가속 worldline 에서의 상대론적 효과가 정확하지 않다.
-- **microcausality 판정이 자명**: `evaluate_microcausality_commutator`는 spacelike 구간에서 항상 0 을 반환하고, 비분리 구간에서 1 을 반환한다. 실제 장 교환자(commutator)를 계산하지 않는다 (line 3289).
-- **다체 상관 미반영**: `CompositeBranch`는 구성요소 간 pairwise 위상 합산만 수행하며, genuinely multi-body quantum correlation 을 포착하지 않는다.
-- **decoherence/환경 결합 없음**: 폐쇄 계(closed system) 만 다루며 환경과의 상호작용에 의한 결어긋남을 모델링하지 않는다.
+- **microcausality 판정이 자명**: `evaluate_microcausality_commutator`는 spacelike 구간에서 항상 0 을 반환하고, 비분리 구간에서 1 을 반환한다. 실제 장 교환자(commutator)를 계산하지 않는다.
+- **텐서 구조 근사 수준**: `compute_tensor_mediated_phase_matrix`가 velocity-dependent coupling 보정을 제공하지만, 완전한 spin-1/spin-2 propagator tensor 구조가 아닌 leading-order 보정이다.
+- **유한차분 PDE solver**: `solve_finite_difference_kg`가 1+1D leapfrog 을 구현하지만 3+1D 완전 시뮬레이션이 아닌 surrogate 수준이다.
+- **decoherence 모델 단순화**: `compute_decoherence_model`은 coherent-state overlap 기반으로 환경 결합을 포함하지만, 열적 환경이나 일반적 Lindblad 방정식을 풀지 않는다.
 
 ### 수치 알고리즘 한계
 
-- **quadrature 차수 제한**: Gauss-Legendre 규칙이 1~5차까지만 하드코딩되어 있다 (line 661–662). 높은 정밀도가 필요한 경우 확장 불가.
-- **Bessel 함수 정밀도**: `_bessel_j1` 이 Taylor 급수로 구현되어 있어 큰 인수(`m·τ ≫ 1`)에서 수렴이 느리거나 정밀도가 떨어질 수 있다 (line 630–639).
-- **DFT 비효율**: `solve_spectral_lattice`의 DFT 가 `O(N²)` 수동 루프로 구현되어 있다 (line 2645–2650). 큰 격자에서 비효율적.
-- **각도 방향 제한**: 연속 운동량 적분의 각도 평균이 최대 26개(축 6 + 대각 8 + 모서리 12) 이산 방향으로만 수행된다. 체계적 구면 quadrature(Lebedev 등)가 아니다.
-- **retarded time 수렴**: `_retarded_source_time`이 단순 고정점 반복(12회)으로 구현되어 있어, 상대론적으로 빠른 source 에서 수렴이 보장되지 않는다 (line 666–691).
-
-### 격자/PDE 한계
-
-- **PDE 미적분**: 모든 격자/PDE 함수(`solve_field_lattice`, `solve_surrogate_4d_field_equation` 등)는 격자 점에서 커널 함수를 평가할 뿐, 실제 편미분 방정식을 유한차분이나 spectral 방법으로 풀지 않는다.
-- **1차원 backreaction**: `evolve_backreacted_branch`가 x축 방향 gradient 만 계산하고 y, z 방향 shift 는 0 으로 고정한다 (line 2916–2918).
-- **인위적 smoothing/damping**: 격자 dynamics 의 smoothing 은 nearest-neighbor 평균이고, FFT evolution 의 damping 은 `1/(1 + strength*index)` 형태로, 물리적 근거 없이 도입되었다.
-- **ad-hoc 경계조건**: spectral lattice 의 경계조건(periodic, Dirichlet, Neumann)이 물리에서 도출된 것이 아니라 가장자리 값 조작으로 구현되어 있다.
-
-### 진단/출력 한계
-
-- **얽힘 측도 부재**: 상대 위상(phase)만 계산하며, von Neumann entropy, negativity, entanglement witness 등 표준 얽힘 측도를 제공하지 않는다.
-- **mode 별 occupation 분포 없음**: 총 occupation number 만 계산하고, 개별 momentum mode 별 분포를 분석하지 않는다.
+- **Lebedev quadrature 제한**: 최대 26-point rule 까지만 제공한다. 더 높은 차수(50, 110, 194-point 등)가 필요한 경우 확장해야 한다.
+- **유한차분 안정성**: `solve_finite_difference_kg`의 Courant 조건을 사용자가 직접 관리해야 한다. 적응적 time stepping 이 없다.
 
 ## 사용 방법
 

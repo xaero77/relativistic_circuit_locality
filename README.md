@@ -30,6 +30,10 @@
 - 유한 개 momentum mode, continuum radial quadrature, adaptive refinement, shell splitting, angular error estimate, extrapolated angular basis, spectral-style error bound, convergence tracking, certified surrogate controller, high-order aggregate result, provable-control wrapper 에 대한 Fourier-space displacement amplitude
 - coherent-state 자유 진화, vacuum suppression, Gaussian/non-Gaussian/cat-state overlap, sample 기반 state tomography, multimode aggregate tomography, symbolic bookkeeping, analytic identity check, state transform, comprehensive bookkeeping, Appendix-D style bundle 추적
 - generalized wavepacket wrapper, microcausality commutator surrogate, full-QFT surrogate bundle, reference PDE control bundle, universal state family bundle, exact mediator surrogate bundle, research-grade closure bundle
+- worldline proper time/Lorentz factor 계산, velocity-dependent tensor mediator (scalar/vector/graviton) 위상, UV renormalization with self-energy subtraction, coherent-state 기반 decoherence/purity, 3-body connected correlation, relativistic backreaction with proper time
+- von Neumann entropy, negativity, entanglement witness, visibility 진단, mode occupation distribution
+- 1+1D leapfrog finite-difference Klein-Gordon solver (absorbing/reflecting/periodic 경계), 물리적 lattice time stepper with radiation damping
+- Lebedev spherical quadrature (6/14/26-point), Gauss-Legendre order 10 확장, Bessel J1 asymptotic expansion, numpy FFT, retarded time bisection fallback, 3D backreaction gradient
 
 현재 코드는 논문의 parametric approximation 안에서 동작한다. 즉, 완전한 QFT 동역학을 직접 적분하지 않고, 시간 이산화된 궤적과 준정적 상호작용 커널을 이용해 논문의 구조를 계산 가능한 형태로 단순화했다.
 
@@ -47,6 +51,10 @@
 - explicit `phi_rs`: `compute_phi_rs_samples`
 - Fourier/coherent-state: `compute_branch_displacement_amplitudes`, `compute_continuum_displacement_amplitudes`, `compute_adaptive_continuum_displacement_amplitudes`, `compute_split_continuum_displacement_amplitudes`, `estimate_continuum_displacement_amplitudes`, `compute_extrapolated_continuum_displacement_amplitudes`, `estimate_spectral_continuum_error_bound`, `estimate_spectral_convergence`, `compute_certified_spectral_displacement_amplitudes`, `compute_high_order_spectral_displacement_amplitudes`, `compute_provable_spectral_control`, `AngularQuadratureResult`, `ContinuumExtrapolationResult`, `SpectralErrorBoundResult`, `SpectralConvergenceResult`, `CertifiedSpectralResult`, `HighOrderSpectralResult`, `ProvableSpectralControlResult`, `compute_branch_pair_displacements`, `compute_displacement_operator_phase`, `CoherentStateEvolution`, `CoherentStateComparison`, `GaussianModeState`, `GeneralGaussianState`, `ModeSuperpositionState`, `CatModeState`, `compare_coherent_states`, `compare_gaussian_mode_states`, `compare_general_gaussian_states`, `compare_superposition_states`, `compare_cat_mode_states`, `tomograph_general_gaussian_state`, `tomograph_cat_mode_state`, `MultimodeTomographyResult`, `tomograph_multimode_family`, `SymbolicBookkeepingResult`, `summarize_symbolic_multimode_bookkeeping`, `AnalyticIdentityResult`, `verify_multimode_analytic_identities`, `MultimodeStateTransformResult`, `compile_multimode_state_transform`, `ComprehensiveBookkeepingResult`, `compile_comprehensive_multimode_bookkeeping`, `AppendixDBookkeepingResult`, `compile_appendix_d_bookkeeping`, `evolve_coherent_state`, `analyze_branch_pair_coherent_state`, `analyze_branch_pair_coherent_overlap`
 - mediator/composite: `CompositeBranch`, `compute_mediated_phase_matrix`, `compute_composite_phase_matrix`, `sample_mediator_field`
+- 물리적 충실도 확장: `ProperTimeWorldline`, `compute_proper_time_worldline`, `TensorMediatedPhaseResult`, `compute_tensor_mediated_phase_matrix`, `RenormalizedPhaseResult`, `compute_renormalized_phase_matrix`, `DecoherenceResult`, `compute_decoherence_model`, `MultiBodyCorrelationResult`, `compute_multi_body_correlation`, `RelativisticForceResult`, `evolve_relativistic_backreaction`
+- 얽힘 진단: `EntanglementMeasures`, `compute_entanglement_measures`, `ModeOccupationDistribution`, `compute_mode_occupation_distribution`
+- PDE/격자: `FiniteDifferencePdeResult`, `solve_finite_difference_kg`, `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics`
+- Lebedev quadrature: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`
 
 ## 전파 모드
 
