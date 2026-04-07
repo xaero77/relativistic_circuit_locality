@@ -244,6 +244,36 @@ class CoupledBackreactionResult:
     iterations: int
 
 
+@dataclass(frozen=True)
+class SpectralLatticeResult:
+    lattice: FieldLattice
+    spectral_coefficients: tuple[complex, ...]
+    boundary_condition: Literal["open", "periodic", "dirichlet", "neumann"]
+
+
+@dataclass(frozen=True)
+class SpectralErrorBoundResult:
+    amplitudes: tuple[complex, ...]
+    absolute_bound: float
+    relative_bound: float
+    mode_count: int
+
+
+@dataclass(frozen=True)
+class SymbolicBookkeepingResult:
+    labels: tuple[str, ...]
+    relative_phase_matrix: tuple[tuple[float, ...], ...]
+    amplitude_norms: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class NonlinearBackreactionResult:
+    source: BranchPath
+    target: BranchPath
+    iterations: int
+    max_update_norm: float
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -256,6 +286,10 @@ def _refine_spatial_points(spatial_points: tuple[Vector3, ...]) -> tuple[Vector3
         refined.append(midpoint)
         refined.append(right)
     return tuple(refined)
+
+
+def _sample_norm(sample: tuple[complex, ...]) -> float:
+    return sqrt(sum(abs(value) ** 2 for value in sample))
 
 
 def _overlap_window(*branches: BranchPath) -> tuple[float, float]:
@@ -1397,6 +1431,34 @@ def compute_extrapolated_continuum_displacement_amplitudes(
     )
 
 
+def estimate_spectral_continuum_error_bound(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    tolerance: float = 1e-6,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> SpectralErrorBoundResult:
+    extrapolated = compute_extrapolated_continuum_displacement_amplitudes(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        tolerance=tolerance,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    absolute_bound = extrapolated.level_errors[-1] if extrapolated.level_errors else 0.0
+    amplitude_scale = max((_sample_norm((value,)) for value in extrapolated.amplitudes), default=1.0)
+    relative_bound = absolute_bound / max(amplitude_scale, 1e-12)
+    return SpectralErrorBoundResult(
+        amplitudes=extrapolated.amplitudes,
+        absolute_bound=absolute_bound,
+        relative_bound=relative_bound,
+        mode_count=extrapolated.mode_counts[-1],
+    )
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1565,6 +1627,21 @@ def tomograph_multimode_family(
         component_states=component_states,
         aggregate_state=aggregate_state,
         relative_phase_matrix=relative_phase_matrix,
+    )
+
+
+def summarize_symbolic_multimode_bookkeeping(
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+) -> SymbolicBookkeepingResult:
+    if not labeled_mode_samples:
+        raise ValueError("labeled_mode_samples must not be empty.")
+    labels = tuple(label for label, _ in labeled_mode_samples)
+    tomography = tomograph_multimode_family(tuple(samples for _, samples in labeled_mode_samples))
+    amplitude_norms = tuple(_sample_norm(state.displacement) for state in tomography.component_states)
+    return SymbolicBookkeepingResult(
+        labels=labels,
+        relative_phase_matrix=tomography.relative_phase_matrix,
+        amplitude_norms=amplitude_norms,
     )
 
 
@@ -2011,6 +2088,61 @@ def solve_multiscale_field_lattice(
     )
 
 
+def solve_spectral_lattice(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    boundary_condition: Literal["open", "periodic", "dirichlet", "neumann"] = "open",
+) -> SpectralLatticeResult:
+    lattice = solve_field_lattice(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    point_count = len(spatial_points)
+    if point_count == 0:
+        raise ValueError("spatial_points must not be empty.")
+    row = [lattice.samples[offset].value for offset in range(point_count)]
+    if boundary_condition == "periodic" and point_count >= 2:
+        edge_mean = 0.5 * (row[0] + row[-1])
+        row[0] = edge_mean
+        row[-1] = edge_mean
+    elif boundary_condition == "dirichlet":
+        row[0] = 0.0
+        row[-1] = 0.0
+    elif boundary_condition == "neumann" and point_count >= 2:
+        row[0] = row[1]
+        row[-1] = row[-2]
+    updated_samples = tuple(
+        FieldSample(t=time_slices[0], position=spatial_points[index], value=row[index]) for index in range(point_count)
+    )
+    coefficients: list[complex] = []
+    for mode in range(point_count):
+        total = 0.0j
+        for index, value in enumerate(row):
+            phase = complex_exp(-2j * pi * mode * index / point_count)
+            total += value * phase
+        coefficients.append(total / point_count)
+    return SpectralLatticeResult(
+        lattice=FieldLattice(samples=updated_samples, time_slices=(time_slices[0],), spatial_points=spatial_points),
+        spectral_coefficients=tuple(coefficients),
+        boundary_condition=boundary_condition,
+    )
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -2129,6 +2261,62 @@ def solve_coupled_backreaction(
         current_source = updated_source
         current_target = updated_target
     return CoupledBackreactionResult(source=current_source, target=current_target, iterations=iterations)
+
+
+def solve_nonlinear_backreaction(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    iterations: int,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.25,
+) -> NonlinearBackreactionResult:
+    if iterations <= 0:
+        raise ValueError("iterations must be positive.")
+    current_source = source
+    current_target = target
+    max_update_norm = 0.0
+    for _ in range(iterations):
+        coupled = solve_coupled_backreaction(
+            current_source,
+            current_target,
+            iterations=1,
+            mass=mass,
+            mediator=mediator,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            response_strength=response_strength,
+        )
+        damped_source_points: list[TrajectoryPoint] = []
+        damped_target_points: list[TrajectoryPoint] = []
+        for old_point, new_point in zip(current_source.points, coupled.source.points):
+            delta = _sub(new_point.position, old_point.position)
+            scale = 1.0 / (1.0 + nonlinearity * _norm(delta))
+            update = _scale(delta, scale)
+            max_update_norm = max(max_update_norm, _norm(update))
+            damped_source_points.append(TrajectoryPoint(old_point.t, _add(old_point.position, update)))
+        for old_point, new_point in zip(current_target.points, coupled.target.points):
+            delta = _sub(new_point.position, old_point.position)
+            scale = 1.0 / (1.0 + nonlinearity * _norm(delta))
+            update = _scale(delta, scale)
+            max_update_norm = max(max_update_norm, _norm(update))
+            damped_target_points.append(TrajectoryPoint(old_point.t, _add(old_point.position, update)))
+        current_source = BranchPath(label=f"{source.label}_nonlinear", charge=source.charge, points=tuple(damped_source_points))
+        current_target = BranchPath(label=f"{target.label}_nonlinear", charge=target.charge, points=tuple(damped_target_points))
+    return NonlinearBackreactionResult(
+        source=current_source,
+        target=current_target,
+        iterations=iterations,
+        max_update_norm=max_update_norm,
+    )
 
 
 def compute_wavepacket_phase_matrix(
