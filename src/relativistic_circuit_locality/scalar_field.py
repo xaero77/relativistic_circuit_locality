@@ -190,6 +190,18 @@ class FieldLattice:
     spatial_points: tuple[Vector3, ...]
 
 
+@dataclass(frozen=True)
+class FieldEvolutionResult:
+    lattices: tuple[FieldLattice, ...]
+
+
+@dataclass(frozen=True)
+class AngularQuadratureResult:
+    amplitudes: tuple[complex, ...]
+    coarse_amplitudes: tuple[complex, ...]
+    error_estimate: float
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -1246,6 +1258,37 @@ def compute_split_continuum_displacement_amplitudes(
     return tuple(total)
 
 
+def estimate_continuum_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+) -> AngularQuadratureResult:
+    coarse = compute_continuum_displacement_amplitudes(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        angular_directions=_AXIS_DIRECTIONS,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    refined = compute_continuum_displacement_amplitudes(
+        branches,
+        field_mass=field_mass,
+        momentum_cutoff=momentum_cutoff,
+        angular_directions=_AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS,
+        source_width=source_width,
+        time_quadrature_order=time_quadrature_order,
+    )
+    return AngularQuadratureResult(
+        amplitudes=refined,
+        coarse_amplitudes=coarse,
+        error_estimate=max(abs(left - right) for left, right in zip(refined, coarse)),
+    )
+
+
 def compute_displacement_operator_phase(
     left: tuple[complex, ...],
     right: tuple[complex, ...],
@@ -1353,6 +1396,46 @@ def compare_cat_mode_states(
             comparison = compare_gaussian_mode_states(component_left, component_right)
             total += weight_left.conjugate() * weight_right * comparison.overlap
     return total
+
+
+def tomograph_general_gaussian_state(mode_samples: tuple[tuple[complex, ...], ...]) -> GeneralGaussianState:
+    if not mode_samples:
+        raise ValueError("mode_samples must not be empty.")
+    dimension = len(mode_samples[0])
+    if any(len(sample) != dimension for sample in mode_samples):
+        raise ValueError("All mode samples must have the same dimension.")
+    means = tuple(sum(sample[index] for sample in mode_samples) / len(mode_samples) for index in range(dimension))
+    covariance_rows: list[tuple[float, ...]] = []
+    for row in range(dimension):
+        covariance_row: list[float] = []
+        for column in range(dimension):
+            covariance_row.append(
+                sum(
+                    (
+                        (sample[row] - means[row]).real * (sample[column] - means[column]).real
+                        + (sample[row] - means[row]).imag * (sample[column] - means[column]).imag
+                    )
+                    for sample in mode_samples
+                )
+                / max(len(mode_samples), 1)
+            )
+        covariance_rows.append(tuple(covariance_row))
+    return GeneralGaussianState(displacement=means, covariance=tuple(covariance_rows))
+
+
+def tomograph_cat_mode_state(
+    mode_samples: tuple[tuple[complex, ...], ...],
+    *,
+    weights: tuple[complex, ...] | None = None,
+) -> CatModeState:
+    if not mode_samples:
+        raise ValueError("mode_samples must not be empty.")
+    gaussian_components = tuple(
+        GaussianModeState(displacement=sample, covariance_diag=tuple(1.0 for _ in sample))
+        for sample in mode_samples
+    )
+    resolved_weights = weights if weights is not None else tuple(1.0 + 0.0j for _ in mode_samples)
+    return CatModeState(weights=resolved_weights, components=gaussian_components)
 
 
 def evolve_coherent_state(
@@ -1707,6 +1790,56 @@ def solve_field_lattice(
     return FieldLattice(samples=samples, time_slices=time_slices, spatial_points=spatial_points)
 
 
+def solve_field_lattice_dynamics(
+    source: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    smoothing_strength: float = 0.1,
+) -> FieldEvolutionResult:
+    base_lattice = solve_field_lattice(
+        source,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        mass=mass,
+        mediator=mediator,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    point_count = len(spatial_points)
+    smoothed_slices: list[FieldLattice] = []
+    for time_index, time_value in enumerate(time_slices):
+        start = time_index * point_count
+        row = [base_lattice.samples[start + offset].value for offset in range(point_count)]
+        if point_count >= 3:
+            neighbor_avg = list(row)
+            for index in range(1, point_count - 1):
+                neighbor_avg[index] = 0.5 * row[index] + 0.25 * (row[index - 1] + row[index + 1])
+            row = [
+                (1.0 - smoothing_strength) * value + smoothing_strength * smoothed
+                for value, smoothed in zip(row, neighbor_avg)
+            ]
+        smoothed_slices.append(
+            FieldLattice(
+                samples=tuple(
+                    FieldSample(t=time_value, position=spatial_points[index], value=row[index])
+                    for index in range(point_count)
+                ),
+                time_slices=(time_value,),
+                spatial_points=spatial_points,
+            )
+        )
+    return FieldEvolutionResult(lattices=tuple(smoothed_slices))
+
+
 def evolve_backreacted_branch(
     source: BranchPath,
     target: BranchPath,
@@ -1749,6 +1882,37 @@ def evolve_backreacted_branch(
         shifted = _add(center, (sign * response_strength * gradient_x, 0.0, 0.0))
         updated_points.append(TrajectoryPoint(point.t, shifted))
     return BranchPath(label=f"{target.label}_{mediator}_backreacted", charge=target.charge, points=tuple(updated_points))
+
+
+def iterate_backreaction(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    iterations: int,
+    mass: float,
+    mediator: Literal["scalar", "vector", "gravity"] = "scalar",
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    response_strength: float = 0.05,
+) -> BranchPath:
+    if iterations <= 0:
+        raise ValueError("iterations must be positive.")
+    current = target
+    for _ in range(iterations):
+        current = evolve_backreacted_branch(
+            source,
+            current,
+            mass=mass,
+            mediator=mediator,
+            cutoff=cutoff,
+            propagation=propagation,
+            light_speed=light_speed,
+            quadrature_order=quadrature_order,
+            response_strength=response_strength,
+        )
+    return current
 
 
 def compute_wavepacket_phase_matrix(

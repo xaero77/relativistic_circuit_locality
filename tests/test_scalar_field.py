@@ -26,6 +26,7 @@ from relativistic_circuit_locality.scalar_field import (
     compute_closest_approach,
     compute_displacement_operator_phase,
     compute_entanglement_phase,
+    estimate_continuum_displacement_amplitudes,
     compute_mediated_phase_matrix,
     compute_phi_rs_samples,
     compute_sampled_spacetime_phase,
@@ -42,7 +43,11 @@ from relativistic_circuit_locality.scalar_field import (
     is_field_mediated,
     sample_branch_field,
     sample_mediator_field,
+    solve_field_lattice_dynamics,
     solve_field_lattice,
+    iterate_backreaction,
+    tomograph_cat_mode_state,
+    tomograph_general_gaussian_state,
 )
 
 
@@ -391,6 +396,12 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(amplitudes), 1)
         self.assertNotEqual(amplitudes[0], 0.0j)
 
+    def test_continuum_displacement_error_estimate_is_finite(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = estimate_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(result.error_estimate, 0.0)
+
     def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
         profile = (1.0 + 2.0j, -0.5j)
         self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
@@ -413,6 +424,11 @@ class ScalarFieldTests(unittest.TestCase):
         comparison = compare_general_gaussian_states(left, right)
         self.assertLessEqual(abs(comparison.overlap), 1.0)
 
+    def test_tomograph_general_gaussian_state_returns_mean_and_covariance(self) -> None:
+        state = tomograph_general_gaussian_state(((1.0 + 0.0j, 0.0j), (0.0j, 1.0 + 0.0j)))
+        self.assertEqual(len(state.displacement), 2)
+        self.assertEqual(len(state.covariance), 2)
+
     def test_compare_superposition_states_returns_finite_overlap(self) -> None:
         left = ModeSuperpositionState(weights=(1.0 + 0.0j, 0.5 + 0.0j), components=((1.0 + 0.0j,), (0.0 + 0.0j,)))
         right = ModeSuperpositionState(weights=(1.0 + 0.0j,), components=((1.0 + 0.0j,),))
@@ -433,6 +449,10 @@ class ScalarFieldTests(unittest.TestCase):
         )
         overlap = compare_cat_mode_states(left, right)
         self.assertNotEqual(overlap, 0.0j)
+
+    def test_tomograph_cat_mode_state_builds_components(self) -> None:
+        state = tomograph_cat_mode_state(((1.0 + 0.0j,), (-1.0 + 0.0j,)))
+        self.assertEqual(len(state.components), 2)
 
     def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
         momenta = ((0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
@@ -497,11 +517,29 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertEqual(len(lattice.samples), 4)
 
+    def test_solve_field_lattice_dynamics_returns_time_slices(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        evolution = solve_field_lattice_dynamics(
+            source,
+            time_slices=(0.0, 1.0, 2.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(evolution.lattices), 3)
+
     def test_backreacted_branch_shifts_target_positions(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
         target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
         updated = evolve_backreacted_branch(source, target, mass=0.5, propagation="instantaneous", response_strength=0.1)
         self.assertNotEqual(updated.points[0].position, target.points[0].position)
+
+    def test_iterate_backreaction_accumulates_updates(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        once = evolve_backreacted_branch(source, target, mass=0.5, propagation="instantaneous", response_strength=0.05)
+        repeated = iterate_backreaction(source, target, iterations=3, mass=0.5, propagation="instantaneous", response_strength=0.05)
+        self.assertNotEqual(once.points[0].position, repeated.points[0].position)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
