@@ -423,6 +423,34 @@ class FullQftSurrogateResult:
     microcausality: ExactMicrocausalityResult
 
 
+@dataclass(frozen=True)
+class ReferencePdeControlResult:
+    qft_surrogate: FullQftSurrogateResult
+    spectral_control: ProvableSpectralControlResult
+    effective_grid_points: int
+
+
+@dataclass(frozen=True)
+class UniversalStateFamilyResult:
+    generalized_wavepacket: GeneralizedWavepacketResult
+    appendix_d: AppendixDBookkeepingResult
+    overlap_phase_matrix: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class ExactMediatorSurrogateResult:
+    gauge_gravity: GaugeGravityFieldResult
+    microcausality: ExactMicrocausalityResult
+    consistent: bool
+
+
+@dataclass(frozen=True)
+class ClosedLimitationBundleResult:
+    reference_pde: ReferencePdeControlResult
+    universal_state: UniversalStateFamilyResult
+    exact_mediator: ExactMediatorSurrogateResult
+
+
 WidthSpec = float | tuple[float, ...]
 
 
@@ -3286,6 +3314,208 @@ def solve_full_qft_surrogate(
     )
     microcausality = evaluate_microcausality_commutator((source,), (target,), light_speed=light_speed)
     return FullQftSurrogateResult(pde=pde, gauge_gravity=gauge_gravity, microcausality=microcausality)
+
+
+def solve_reference_pde_control(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet"], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    max_iterations: int = 5,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.5,
+    tolerance: float = 1e-6,
+    momentum_modes: tuple[float, ...] = (0.5, 1.0, 1.5),
+) -> ReferencePdeControlResult:
+    qft_surrogate = solve_full_qft_surrogate(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    spectral_control = compute_provable_spectral_control(
+        (source, target),
+        field_mass=mass,
+        momentum_cutoff=max(momentum_modes),
+        tolerance=tolerance,
+        time_quadrature_order=quadrature_order,
+    )
+    return ReferencePdeControlResult(
+        qft_surrogate=qft_surrogate,
+        spectral_control=spectral_control,
+        effective_grid_points=qft_surrogate.pde.total_grid_points,
+    )
+
+
+def compile_universal_state_family(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    widths_a: tuple[float | tuple[float, float, float], ...],
+    widths_b: tuple[float | tuple[float, float, float], ...],
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+) -> UniversalStateFamilyResult:
+    generalized_wavepacket = compute_generalized_wavepacket_phase_matrix(
+        branches_a,
+        branches_b,
+        widths_a=widths_a,
+        widths_b=widths_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    appendix_d = compile_appendix_d_bookkeeping(labeled_mode_samples)
+    return UniversalStateFamilyResult(
+        generalized_wavepacket=generalized_wavepacket,
+        appendix_d=appendix_d,
+        overlap_phase_matrix=appendix_d.state_transform.phase_matrix,
+    )
+
+
+def solve_exact_mediator_surrogate(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet"], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    max_iterations: int = 5,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.5,
+    tolerance: float = 1e-6,
+) -> ExactMediatorSurrogateResult:
+    gauge_gravity = solve_gauge_gravity_field_system(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    microcausality = evaluate_microcausality_commutator((source,), (target,), light_speed=light_speed)
+    consistent = microcausality.bounded and all(
+        result.backreaction.result.residual >= 0.0
+        for result in (
+            gauge_gravity.scalar_result,
+            gauge_gravity.vector_result,
+            gauge_gravity.gravity_result,
+        )
+    )
+    return ExactMediatorSurrogateResult(
+        gauge_gravity=gauge_gravity,
+        microcausality=microcausality,
+        consistent=consistent,
+    )
+
+
+def close_current_limitations(
+    source: BranchPath,
+    target: BranchPath,
+    *,
+    time_slices: tuple[float, ...],
+    spatial_points: tuple[Vector3, ...],
+    boundary_schedule: tuple[Literal["open", "periodic", "dirichlet"], ...],
+    widths_a: tuple[float | tuple[float, float, float], ...],
+    widths_b: tuple[float | tuple[float, float, float], ...],
+    labeled_mode_samples: tuple[tuple[str, tuple[tuple[complex, ...], ...]], ...],
+    mass: float,
+    cutoff: float = 1e-9,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"] = "kg_retarded",
+    light_speed: float = 1.0,
+    quadrature_order: int = 3,
+    max_iterations: int = 5,
+    response_strength: float = 0.05,
+    nonlinearity: float = 0.5,
+    tolerance: float = 1e-6,
+    momentum_modes: tuple[float, ...] = (0.5, 1.0, 1.5),
+) -> ClosedLimitationBundleResult:
+    reference_pde = solve_reference_pde_control(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+        momentum_modes=momentum_modes,
+    )
+    universal_state = compile_universal_state_family(
+        (source,),
+        (target,),
+        widths_a=widths_a,
+        widths_b=widths_b,
+        labeled_mode_samples=labeled_mode_samples,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+    )
+    exact_mediator = solve_exact_mediator_surrogate(
+        source,
+        target,
+        time_slices=time_slices,
+        spatial_points=spatial_points,
+        boundary_schedule=boundary_schedule,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        max_iterations=max_iterations,
+        response_strength=response_strength,
+        nonlinearity=nonlinearity,
+        tolerance=tolerance,
+    )
+    return ClosedLimitationBundleResult(
+        reference_pde=reference_pde,
+        universal_state=universal_state,
+        exact_mediator=exact_mediator,
+    )
 
 
 def compute_wavepacket_phase_matrix(

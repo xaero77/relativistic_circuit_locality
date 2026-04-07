@@ -77,6 +77,10 @@ from relativistic_circuit_locality.scalar_field import (
     analyze_sampled_phase_decomposition,
     compute_generalized_wavepacket_phase_matrix,
     evaluate_microcausality_commutator,
+    solve_reference_pde_control,
+    compile_universal_state_family,
+    solve_exact_mediator_surrogate,
+    close_current_limitations,
 )
 
 
@@ -886,6 +890,76 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result.pde.total_grid_points, 1)
         self.assertTrue(result.microcausality.bounded)
+
+    def test_solve_reference_pde_control_returns_certificate(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_reference_pde_control(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.effective_grid_points, 1)
+        self.assertGreaterEqual(result.spectral_control.strict_certificate_error, 0.0)
+
+    def test_compile_universal_state_family_returns_phase_matrix(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = compile_universal_state_family(
+            (source,),
+            (target,),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(
+                ("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)),
+                ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),)),
+            ),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(result.generalized_wavepacket.matrix), 1)
+        self.assertEqual(len(result.overlap_phase_matrix), 2)
+
+    def test_solve_exact_mediator_surrogate_reports_consistency(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_exact_mediator_surrogate(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertTrue(result.consistent)
+        self.assertTrue(result.microcausality.bounded)
+
+    def test_close_current_limitations_returns_all_bundles(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = close_current_limitations(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(
+                ("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)),
+                ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),)),
+            ),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.reference_pde.effective_grid_points, 1)
+        self.assertEqual(len(result.universal_state.overlap_phase_matrix), 2)
+        self.assertTrue(result.exact_mediator.consistent)
 
     def test_composite_phase_matrix_sums_component_pairs(self) -> None:
         a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
