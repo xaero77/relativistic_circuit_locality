@@ -5,7 +5,7 @@ from __future__ import annotations
 from cmath import exp as complex_exp
 from functools import lru_cache
 from dataclasses import dataclass
-from math import exp, factorial, inf, pi, sinh, sqrt
+from math import ceil, exp, factorial, inf, pi, sinh, sqrt
 from typing import Callable, Literal
 
 import numpy as np
@@ -679,6 +679,8 @@ class FiniteDifferencePdeResult:
     courant_number: float
     grid_shape: tuple[int, int, int]
     spatial_dimension: int
+    effective_time_step: float
+    substeps_per_interval: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -5030,6 +5032,15 @@ def _finite_difference_boundary_value(
     return phi_curr[current_index[0] + dims[0] * (current_index[1] + dims[1] * current_index[2])]
 
 
+def _required_substeps(interval_dt: float, courant_scale: float, max_courant: float) -> int:
+    if interval_dt <= 0.0:
+        raise ValueError("time_slices must be strictly increasing.")
+    if max_courant <= 0.0:
+        raise ValueError("max_courant must be positive.")
+    target = abs(interval_dt) * courant_scale / max(max_courant, 1e-12)
+    return max(1, int(ceil(target)))
+
+
 def solve_finite_difference_kg(
     source: BranchPath,
     *,
@@ -5038,6 +5049,7 @@ def solve_finite_difference_kg(
     mass: float,
     light_speed: float = 1.0,
     boundary: Literal["absorbing", "reflecting", "periodic"] = "absorbing",
+    max_courant: float = 0.9,
 ) -> FiniteDifferencePdeResult:
     """유한차분 leapfrog 방법으로 Klein-Gordon 방정식을 직접 적분한다.
 
@@ -5055,10 +5067,13 @@ def solve_finite_difference_kg(
     n_space = len(spatial_points)
     c2 = light_speed * light_speed
     m2 = mass * mass
+    if max_courant <= 0.0:
+        raise ValueError("max_courant must be positive.")
     if cartesian is None:
         dx_values = [_norm(_sub(spatial_points[i + 1], spatial_points[i])) for i in range(n_space - 1)]
         dx = min(dx_values) if dx_values else 1.0
         courant = light_speed * dt / max(dx, 1e-12)
+        courant_scale = light_speed / max(dx, 1e-12)
         phi_prev = [0.0] * n_space
         phi_curr = [0.0] * n_space
         for j in range(n_space):
@@ -5066,39 +5081,48 @@ def solve_finite_difference_kg(
             phi_curr[j] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
 
         all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
+        substeps_per_interval: list[int] = []
+        effective_dt_min = inf
         for ti in range(1, len(time_slices)):
             current_dt = time_slices[ti] - time_slices[ti - 1]
-            phi_next = [0.0] * n_space
-            for j in range(n_space):
-                if j == 0:
-                    if boundary == "periodic":
-                        laplacian = (phi_curr[1] - 2.0 * phi_curr[0] + phi_curr[n_space - 1]) / (dx * dx)
-                    elif boundary == "reflecting":
-                        laplacian = (phi_curr[1] - phi_curr[0]) / (dx * dx)
+            substeps = _required_substeps(current_dt, courant_scale, max_courant)
+            substeps_per_interval.append(substeps)
+            sub_dt = current_dt / substeps
+            effective_dt_min = min(effective_dt_min, sub_dt)
+            interval_start = time_slices[ti - 1]
+            for substep in range(substeps):
+                sample_time = interval_start + (substep + 1) * sub_dt
+                phi_next = [0.0] * n_space
+                for j in range(n_space):
+                    if j == 0:
+                        if boundary == "periodic":
+                            laplacian = (phi_curr[1] - 2.0 * phi_curr[0] + phi_curr[n_space - 1]) / (dx * dx)
+                        elif boundary == "reflecting":
+                            laplacian = (phi_curr[1] - phi_curr[0]) / (dx * dx)
+                        else:
+                            laplacian = (phi_curr[1] - 2.0 * phi_curr[0]) / (dx * dx)
+                    elif j == n_space - 1:
+                        if boundary == "periodic":
+                            laplacian = (phi_curr[0] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
+                        elif boundary == "reflecting":
+                            laplacian = (phi_curr[j - 1] - phi_curr[j]) / (dx * dx)
+                        else:
+                            laplacian = (phi_curr[j - 1] - 2.0 * phi_curr[j]) / (dx * dx)
                     else:
-                        laplacian = (phi_curr[1] - 2.0 * phi_curr[0]) / (dx * dx)
-                elif j == n_space - 1:
-                    if boundary == "periodic":
-                        laplacian = (phi_curr[0] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
-                    elif boundary == "reflecting":
-                        laplacian = (phi_curr[j - 1] - phi_curr[j]) / (dx * dx)
-                    else:
-                        laplacian = (phi_curr[j - 1] - 2.0 * phi_curr[j]) / (dx * dx)
-                else:
-                    laplacian = (phi_curr[j + 1] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
-                source_density = _source_density_at_point(source, time_slices[ti], spatial_points[j])
-                phi_next[j] = (
-                    2.0 * phi_curr[j]
-                    - phi_prev[j]
-                    + current_dt * current_dt * (c2 * laplacian - m2 * phi_curr[j] + source_density)
-                )
+                        laplacian = (phi_curr[j + 1] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
+                    source_density = _source_density_at_point(source, sample_time, spatial_points[j])
+                    phi_next[j] = (
+                        2.0 * phi_curr[j]
+                        - phi_prev[j]
+                        + sub_dt * sub_dt * (c2 * laplacian - m2 * phi_curr[j] + source_density)
+                    )
 
-            if boundary == "absorbing" and n_space >= 2:
-                phi_next[0] = phi_curr[0] + light_speed * current_dt * (phi_curr[1] - phi_curr[0]) / dx
-                phi_next[-1] = phi_curr[-1] - light_speed * current_dt * (phi_curr[-1] - phi_curr[-2]) / dx
+                if boundary == "absorbing" and n_space >= 2:
+                    phi_next[0] = phi_curr[0] + light_speed * sub_dt * (phi_curr[1] - phi_curr[0]) / dx
+                    phi_next[-1] = phi_curr[-1] - light_speed * sub_dt * (phi_curr[-1] - phi_curr[-2]) / dx
 
-            phi_prev = list(phi_curr)
-            phi_curr = phi_next
+                phi_prev = list(phi_curr)
+                phi_curr = phi_next
             all_slices.append(tuple(phi_curr))
         return FiniteDifferencePdeResult(
             field_values=tuple(all_slices),
@@ -5107,6 +5131,8 @@ def solve_finite_difference_kg(
             courant_number=courant,
             grid_shape=(n_space, 1, 1),
             spatial_dimension=1,
+            effective_time_step=effective_dt_min if effective_dt_min < inf else dt,
+            substeps_per_interval=tuple(substeps_per_interval),
         )
 
     xs, ys, zs, mapping = cartesian
@@ -5117,6 +5143,7 @@ def solve_finite_difference_kg(
     if not active_spacings:
         raise ValueError("At least one occupied spatial axis needs two grid points.")
     courant = light_speed * dt * sqrt(sum((1.0 / (spacing * spacing)) for spacing in active_spacings))
+    courant_scale = light_speed * sqrt(sum((1.0 / (spacing * spacing)) for spacing in active_spacings))
     dims = (len(xs), len(ys), len(zs))
     spatial_dimension = sum(1 for size in dims if size > 1)
 
@@ -5129,69 +5156,77 @@ def solve_finite_difference_kg(
 
     all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
     axis_spacings = (dx, dy, dz)
+    substeps_per_interval: list[int] = []
+    effective_dt_min = inf
     for ti in range(1, len(time_slices)):
         current_dt = time_slices[ti] - time_slices[ti - 1]
-        phi_next = [0.0] * n_space
-        for (ix, iy, iz), flat_index in mapping.items():
-            laplacian = 0.0
-            for axis, spacing in enumerate(axis_spacings):
-                if spacing is None:
-                    continue
-                current_index = (ix, iy, iz)
-                minus_index = [ix, iy, iz]
-                plus_index = [ix, iy, iz]
-                minus_index[axis] -= 1
-                plus_index[axis] += 1
-                minus_value = _finite_difference_boundary_value(
-                    phi_curr,
-                    current_index,
-                    (minus_index[0], minus_index[1], minus_index[2]),
-                    axis=axis,
-                    direction=-1,
-                    dims=dims,
-                    boundary=boundary,
-                )
-                plus_value = _finite_difference_boundary_value(
-                    phi_curr,
-                    current_index,
-                    (plus_index[0], plus_index[1], plus_index[2]),
-                    axis=axis,
-                    direction=1,
-                    dims=dims,
-                    boundary=boundary,
-                )
-                laplacian += (plus_value - 2.0 * phi_curr[flat_index] + minus_value) / (spacing * spacing)
-            source_density = _source_density_at_point(source, time_slices[ti], spatial_points[flat_index])
-            phi_next[flat_index] = (
-                2.0 * phi_curr[flat_index]
-                - phi_prev[flat_index]
-                + current_dt * current_dt * (c2 * laplacian - m2 * phi_curr[flat_index] + source_density)
-            )
-
-        if boundary == "absorbing":
+        substeps = _required_substeps(current_dt, courant_scale, max_courant)
+        substeps_per_interval.append(substeps)
+        sub_dt = current_dt / substeps
+        effective_dt_min = min(effective_dt_min, sub_dt)
+        interval_start = time_slices[ti - 1]
+        for substep in range(substeps):
+            sample_time = interval_start + (substep + 1) * sub_dt
+            phi_next = [0.0] * n_space
             for (ix, iy, iz), flat_index in mapping.items():
-                correction = 0.0
-                correction_count = 0
+                laplacian = 0.0
                 for axis, spacing in enumerate(axis_spacings):
                     if spacing is None:
                         continue
-                    coordinate = (ix, iy, iz)[axis]
-                    if coordinate not in {0, dims[axis] - 1}:
-                        continue
                     current_index = (ix, iy, iz)
-                    inward = [ix, iy, iz]
-                    inward[axis] = 1 if coordinate == 0 else dims[axis] - 2
-                    inward_flat = inward[0] + dims[0] * (inward[1] + dims[1] * inward[2])
-                    outward_sign = 1.0 if coordinate == 0 else -1.0
-                    correction += phi_curr[flat_index] + outward_sign * light_speed * current_dt * (
-                        phi_curr[inward_flat] - phi_curr[flat_index]
-                    ) / spacing
-                    correction_count += 1
-                if correction_count > 0:
-                    phi_next[flat_index] = correction / correction_count
+                    minus_index = [ix, iy, iz]
+                    plus_index = [ix, iy, iz]
+                    minus_index[axis] -= 1
+                    plus_index[axis] += 1
+                    minus_value = _finite_difference_boundary_value(
+                        phi_curr,
+                        current_index,
+                        (minus_index[0], minus_index[1], minus_index[2]),
+                        axis=axis,
+                        direction=-1,
+                        dims=dims,
+                        boundary=boundary,
+                    )
+                    plus_value = _finite_difference_boundary_value(
+                        phi_curr,
+                        current_index,
+                        (plus_index[0], plus_index[1], plus_index[2]),
+                        axis=axis,
+                        direction=1,
+                        dims=dims,
+                        boundary=boundary,
+                    )
+                    laplacian += (plus_value - 2.0 * phi_curr[flat_index] + minus_value) / (spacing * spacing)
+                source_density = _source_density_at_point(source, sample_time, spatial_points[flat_index])
+                phi_next[flat_index] = (
+                    2.0 * phi_curr[flat_index]
+                    - phi_prev[flat_index]
+                    + sub_dt * sub_dt * (c2 * laplacian - m2 * phi_curr[flat_index] + source_density)
+                )
 
-        phi_prev = list(phi_curr)
-        phi_curr = phi_next
+            if boundary == "absorbing":
+                for (ix, iy, iz), flat_index in mapping.items():
+                    correction = 0.0
+                    correction_count = 0
+                    for axis, spacing in enumerate(axis_spacings):
+                        if spacing is None:
+                            continue
+                        coordinate = (ix, iy, iz)[axis]
+                        if coordinate not in {0, dims[axis] - 1}:
+                            continue
+                        inward = [ix, iy, iz]
+                        inward[axis] = 1 if coordinate == 0 else dims[axis] - 2
+                        inward_flat = inward[0] + dims[0] * (inward[1] + dims[1] * inward[2])
+                        outward_sign = 1.0 if coordinate == 0 else -1.0
+                        correction += phi_curr[flat_index] + outward_sign * light_speed * sub_dt * (
+                            phi_curr[inward_flat] - phi_curr[flat_index]
+                        ) / spacing
+                        correction_count += 1
+                    if correction_count > 0:
+                        phi_next[flat_index] = correction / correction_count
+
+            phi_prev = list(phi_curr)
+            phi_curr = phi_next
         all_slices.append(tuple(phi_curr))
 
     return FiniteDifferencePdeResult(
@@ -5201,6 +5236,8 @@ def solve_finite_difference_kg(
         courant_number=courant,
         grid_shape=dims,
         spatial_dimension=spatial_dimension,
+        effective_time_step=effective_dt_min if effective_dt_min < inf else dt,
+        substeps_per_interval=tuple(substeps_per_interval),
     )
 
 

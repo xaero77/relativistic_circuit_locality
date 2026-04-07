@@ -193,13 +193,13 @@
 
 - ~~microcausality 판정이 자명~~ → `evaluate_microcausality_commutator`가 branch segment 쌍에 대해 Pauli-Jordan commutator 를 Gauss-Legendre 이중 적분으로 평가한다. massive Klein-Gordon tail `-m J1(mτ)/(4πτ)`와 수치적으로 regularized 한 light-cone shell 을 함께 반영하므로, 단순 0/1 판정 대신 spacelike support 에서는 0, timelike/null support 에서는 비영 commutator norm 을 반환한다.
 - ~~텐서 구조 근사 수준~~ → `compute_tensor_mediated_phase_matrix`가 branch 분리 방향에 대한 transverse/longitudinal projector 를 구성해 vector current-current contraction 을 평가하고, gravity 채널에는 같은 projector 위의 traceless spatial stress contraction 을 추가한다. 따라서 단순 `1 ± v_a·v_b/c²` 평균 보정이 아니라, 평행/수직 운동 방향과 massive mediator 의 longitudinal weight 를 구분하는 spin-1/spin-2 surrogate tensor 구조를 반영한다. 완전한 비국소 게이지 고정 propagator 와 전체 4D vertex 재합산은 아직 지원하지 않는다.
-- ~~유한차분 PDE solver~~ → `solve_finite_difference_kg`가 tensor-product `spatial_points`를 자동 인식해 Cartesian 3D 7-point Laplacian leapfrog 진화를 수행한다. `FiniteDifferencePdeResult`에 `grid_shape`, `spatial_dimension` 메타데이터도 추가해 1D slice 와 3D 격자를 같은 API로 추적할 수 있다. 다만 adaptive mesh refinement, 고차 stencil, 완전한 임의 곡면 경계는 아직 지원하지 않는다.
+- ~~유한차분 PDE solver~~ → `solve_finite_difference_kg`가 tensor-product `spatial_points`를 자동 인식해 Cartesian 3D 7-point Laplacian leapfrog 진화를 수행하고, coarse `time_slices` 사이에서는 Courant 수에 맞춰 adaptive substepping 을 적용한다. `FiniteDifferencePdeResult`에 `grid_shape`, `spatial_dimension`, `effective_time_step`, `substeps_per_interval` 메타데이터도 추가해 1D slice 와 3D 격자, 내부 안정화 step 을 같은 API로 추적할 수 있다. 다만 adaptive mesh refinement, 고차 stencil, 완전한 임의 곡면 경계는 아직 지원하지 않는다.
 - **decoherence 모델 단순화**: `compute_decoherence_model`은 coherent-state overlap 기반으로 환경 결합을 포함하지만, 열적 환경이나 일반적 Lindblad 방정식을 풀지 않는다.
 
 ### 수치 알고리즘 한계
 
 - **Lebedev quadrature 제한**: 최대 26-point rule 까지만 제공한다. 더 높은 차수(50, 110, 194-point 등)가 필요한 경우 확장해야 한다.
-- **유한차분 안정성**: `solve_finite_difference_kg`의 Courant 조건을 사용자가 직접 관리해야 한다. 적응적 time stepping 이 없다.
+- ~~유한차분 안정성~~ → `solve_finite_difference_kg`가 구간별 Courant 수를 계산해 필요한 만큼 leapfrog substep 수를 자동 선택한다. 사용자는 coarse `time_slices`를 유지한 채 안정한 내부 `effective_time_step`과 `substeps_per_interval` 정보를 결과에서 확인할 수 있다. 다만 완전한 local error control 기반의 비균일 적응 시간적분은 아직 없다.
 
 ## 사용 방법
 

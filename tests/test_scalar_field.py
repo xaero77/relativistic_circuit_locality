@@ -1270,6 +1270,8 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(result.courant_number, 0.0)
         self.assertEqual(result.grid_shape, (5, 1, 1))
         self.assertEqual(result.spatial_dimension, 1)
+        self.assertEqual(result.substeps_per_interval, (1, 1, 1))
+        self.assertAlmostEqual(result.effective_time_step, 0.5)
 
     def test_finite_difference_kg_periodic_boundary(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
@@ -1301,6 +1303,20 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(len(result.field_values[0]), 8)
         self.assertEqual(result.grid_shape, (2, 2, 2))
         self.assertEqual(result.spatial_dimension, 3)
+
+    def test_finite_difference_kg_adaptive_substeps_reduce_effective_dt(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 2.0),
+            spatial_points=((-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary="reflecting",
+            max_courant=0.9,
+        )
+        self.assertGreater(result.courant_number, 0.9)
+        self.assertGreater(result.substeps_per_interval[0], 1)
+        self.assertLess(result.effective_time_step, 2.0)
 
     def test_finite_difference_kg_reflecting_boundary(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
