@@ -1285,6 +1285,8 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.lamb_shift_matrix, ((0.0 + 0.0j,),))
         self.assertEqual(result.bath_dressing_matrix, ((0.0 + 0.0j,),))
         self.assertEqual(result.bath_dressing_norm, 0.0)
+        self.assertEqual(result.influence_phase_matrix, ((0.0,),))
+        self.assertEqual(result.non_gaussian_cumulant_norm, 0.0)
         self.assertAlmostEqual(result.lindblad_trace, 1.0)
 
     def test_decoherence_model_thermal_environment_suppresses_off_diagonal(self) -> None:
@@ -1458,6 +1460,38 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(dressed.bath_dressing_norm, 0.0)
         self.assertNotEqual(dressed.bath_dressing_matrix[0][1], 0.0 + 0.0j)
         self.assertAlmostEqual(dressed.lindblad_trace, 1.0, places=8)
+
+    def test_decoherence_model_influence_functional_adds_non_gaussian_phase(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        base = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            colored_noise_correlation=lambda tau: exp(-tau),
+            noise_time_window=1.0,
+            noise_steps=32,
+        )
+        influenced = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            bath_spectral_density=lambda omega: 1.0 / (1.0 + omega),
+            colored_noise_correlation=lambda tau: exp(-tau),
+            influence_phase_strength=0.2,
+            influence_time_grid=(0.0, 0.25, 0.5, 0.75, 1.0),
+            non_gaussian_cumulant=lambda t1, t2: (t2 - t1) * (t1 + t2),
+            non_gaussian_cumulant_strength=0.15,
+        )
+        self.assertGreater(abs(influenced.influence_phase_matrix[0][1]), 0.0)
+        self.assertGreater(influenced.non_gaussian_cumulant_norm, 0.0)
+        self.assertNotAlmostEqual(
+            influenced.coherence_matrix[0][1].imag,
+            base.coherence_matrix[0][1].imag,
+        )
 
     def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
         a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

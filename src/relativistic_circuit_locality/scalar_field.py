@@ -685,6 +685,8 @@ class DecoherenceResult:
     renormalized_transition_energies: tuple[float, ...]
     bath_dressing_matrix: tuple[tuple[complex, ...], ...]
     bath_dressing_norm: float
+    influence_phase_matrix: tuple[tuple[float, ...], ...]
+    non_gaussian_cumulant_norm: float
     lindblad_trace: float
 
 
@@ -5156,6 +5158,10 @@ def compute_decoherence_model(
     lamb_shift_cutoff: float | None = None,
     auto_bath_dressing_from_bath: bool = False,
     bath_dressing_strength: float = 1.0,
+    influence_time_grid: tuple[float, ...] | None = None,
+    influence_phase_strength: float = 0.0,
+    non_gaussian_cumulant: Callable[[float, float], float] | None = None,
+    non_gaussian_cumulant_strength: float = 0.0,
     memory_kernel: Callable[[float], float] | None = None,
     memory_times: tuple[float, ...] | None = None,
     memory_strength: float = 0.0,
@@ -5390,6 +5396,53 @@ def compute_decoherence_model(
                 dressing[j, i] = dressing_value
         return dressing
 
+    def _resolve_influence_time_grid() -> tuple[float, ...]:
+        if influence_time_grid is not None:
+            if len(influence_time_grid) < 2:
+                raise ValueError("influence_time_grid must contain at least two points.")
+            if any(right <= left for left, right in zip(influence_time_grid, influence_time_grid[1:])):
+                raise ValueError("influence_time_grid must be strictly increasing.")
+            return influence_time_grid
+        window = lindblad_time if lindblad_time > 0.0 else 1.0
+        steps = max(lindblad_steps, 8)
+        return tuple(window * step / float(steps) for step in range(steps + 1))
+
+    def _compute_influence_functional_terms(
+        energies: tuple[float, ...],
+        resolved_grid: tuple[float, ...],
+    ) -> tuple[tuple[tuple[float, ...], ...], float]:
+        influence_phase: list[list[float]] = []
+        cumulant_norm = 0.0
+        for i in range(n_total):
+            row: list[float] = []
+            for j in range(n_total):
+                if i == j:
+                    row.append(0.0)
+                    continue
+                phase_value = 0.0
+                for left, right in zip(resolved_grid, resolved_grid[1:]):
+                    midpoint = 0.5 * (left + right)
+                    dt_segment = right - left
+                    gap = abs(energies[i] - energies[j])
+                    spectral_value = (
+                        max(float(bath_spectral_density(gap)), 0.0)
+                        if bath_spectral_density is not None
+                        else 1.0
+                    )
+                    noise_value = (
+                        max(float(colored_noise_correlation(midpoint)), 0.0)
+                        if colored_noise_correlation is not None
+                        else 1.0
+                    )
+                    phase_value += dt_segment * influence_phase_strength * spectral_value * noise_value
+                    if non_gaussian_cumulant is not None and non_gaussian_cumulant_strength != 0.0:
+                        cumulant_value = non_gaussian_cumulant(left, right)
+                        phase_value += non_gaussian_cumulant_strength * dt_segment * cumulant_value
+                        cumulant_norm += abs(dt_segment * cumulant_value)
+                row.append(phase_value)
+            influence_phase.append(row)
+        return tuple(tuple(row) for row in influence_phase), cumulant_norm * abs(non_gaussian_cumulant_strength)
+
     def _memory_rhs(
         current_time: float,
         history_times: tuple[float, ...],
@@ -5421,6 +5474,12 @@ def compute_decoherence_model(
     colored_noise_norm = _compute_colored_noise_norm()
     resolved_memory_times = _resolve_memory_times()
     memory_kernel_norm = _compute_memory_kernel_norm(resolved_memory_times)
+    branch_energies = _resolve_branch_energies()
+    resolved_influence_grid = _resolve_influence_time_grid()
+    influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
+        branch_energies,
+        resolved_influence_grid,
+    )
     # coherence matrix: ρ((r,s),(r',s')) = <field_{rs}|field_{r's'}>
     coherence: list[list[complex]] = []
     for r in range(n_a):
@@ -5442,12 +5501,12 @@ def compute_decoherence_model(
                     )
                     suppression = exp(-0.5 * thermal_diff_sq * suppression_strength)
                     phase = compute_displacement_operator_phase(alpha_rs, alpha_rps)
+                    phase += influence_phase_matrix[r * n_b + s][rp * n_b + sp]
                     row.append(suppression * complex_exp(1j * phase))
             coherence.append(row)
     density_matrix = np.array(coherence, dtype=complex) / float(n_total)
     generated_lindblad_rates: tuple[float, ...] = tuple()
     detailed_balance_deviation = 0.0
-    branch_energies = _resolve_branch_energies()
     lamb_shift_hamiltonian, renormalized_transition_energies = _generate_lamb_shift_hamiltonian()
     bath_dressing_matrix = _generate_bath_dressing_matrix(branch_energies, density_matrix)
     bath_dressing_norm = float(np.linalg.norm(bath_dressing_matrix))
@@ -5558,6 +5617,8 @@ def compute_decoherence_model(
             for row in bath_dressing_matrix
         ),
         bath_dressing_norm=bath_dressing_norm,
+        influence_phase_matrix=influence_phase_matrix,
+        non_gaussian_cumulant_norm=non_gaussian_cumulant_norm,
         lindblad_trace=float(np.trace(density_matrix).real),
     )
 
