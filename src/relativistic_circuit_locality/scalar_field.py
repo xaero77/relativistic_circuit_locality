@@ -644,6 +644,31 @@ class TensorMediatedPhaseResult:
     gauge_parameter: float
     vertex_resummation: str
     vertex_strength: float
+    ghost_sector: GhostSectorResult
+    dyson_schwinger: DysonSchwingerResult
+
+
+@dataclass(frozen=True)
+class GhostSectorResult:
+    ghost_phase: tuple[tuple[float, ...], ...]
+    brst_compensated_vector_phase: tuple[tuple[float, ...], ...]
+    longitudinal_residual: tuple[tuple[float, ...], ...]
+    brst_residual_norm: float
+    nilpotency_defect: float
+    mode: str
+    strength: float
+
+
+@dataclass(frozen=True)
+class DysonSchwingerResult:
+    dressed_vector_phase: tuple[tuple[float, ...], ...]
+    dressed_gravity_phase: tuple[tuple[float, ...], ...]
+    self_energy_kernel: tuple[tuple[float, ...], ...]
+    iterations: int
+    residual_norm: float
+    converged: bool
+    mode: str
+    strength: float
 
 
 @dataclass(frozen=True)
@@ -4593,6 +4618,248 @@ def _vertex_resummation_factor(
     return 1.0
 
 
+def _zero_phase_matrix(rows: int, cols: int) -> tuple[tuple[float, ...], ...]:
+    return tuple(tuple(0.0 for _ in range(cols)) for _ in range(rows))
+
+
+def _phase_matrix_add(
+    left: tuple[tuple[float, ...], ...],
+    right: tuple[tuple[float, ...], ...],
+) -> tuple[tuple[float, ...], ...]:
+    return tuple(
+        tuple(left[i][j] + right[i][j] for j in range(len(left[i])))
+        for i in range(len(left))
+    )
+
+
+def _phase_matrix_subtract(
+    left: tuple[tuple[float, ...], ...],
+    right: tuple[tuple[float, ...], ...],
+) -> tuple[tuple[float, ...], ...]:
+    return tuple(
+        tuple(left[i][j] - right[i][j] for j in range(len(left[i])))
+        for i in range(len(left))
+    )
+
+
+def _phase_matrix_scale(
+    matrix: tuple[tuple[float, ...], ...],
+    factor: float,
+) -> tuple[tuple[float, ...], ...]:
+    return tuple(
+        tuple(factor * value for value in row)
+        for row in matrix
+    )
+
+
+def _phase_matrix_max_abs(matrix: tuple[tuple[float, ...], ...]) -> float:
+    return max((abs(value) for row in matrix for value in row), default=0.0)
+
+
+def _phase_matrix_blend(
+    left: tuple[tuple[float, ...], ...],
+    right: tuple[tuple[float, ...], ...],
+    *,
+    relaxation: float,
+) -> tuple[tuple[float, ...], ...]:
+    return tuple(
+        tuple((1.0 - relaxation) * left[i][j] + relaxation * right[i][j] for j in range(len(left[i])))
+        for i in range(len(left))
+    )
+
+
+def _compute_tensor_channel_matrix(
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    *,
+    mediator: Literal["vector", "gravity"],
+    mass: float,
+    cutoff: float,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
+    light_speed: float,
+    quadrature_order: int,
+    gauge_scheme: str,
+    gauge_parameter: float,
+    vertex_resummation: str,
+    vertex_strength: float,
+) -> tuple[tuple[float, ...], ...]:
+    return tuple(
+        tuple(
+            _tensor_mediated_pair_phase(
+                branch_a,
+                branch_b,
+                mediator=mediator,
+                mass=mass,
+                cutoff=cutoff,
+                propagation=propagation,
+                light_speed=light_speed,
+                quadrature_order=quadrature_order,
+                gauge_scheme=gauge_scheme,
+                gauge_parameter=gauge_parameter,
+                vertex_resummation=vertex_resummation,
+                vertex_strength=vertex_strength,
+            )
+            for branch_b in branches_b
+        )
+        for branch_a in branches_a
+    )
+
+
+def _compute_ghost_sector(
+    vector_phase: tuple[tuple[float, ...], ...],
+    *,
+    branches_a: tuple[BranchPath, ...],
+    branches_b: tuple[BranchPath, ...],
+    mass: float,
+    cutoff: float,
+    propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
+    light_speed: float,
+    quadrature_order: int,
+    mediator_mass: float,
+    gauge_parameter: float,
+    vertex_resummation: str,
+    vertex_strength: float,
+    ghost_mode: str,
+    ghost_strength: float,
+) -> GhostSectorResult:
+    if ghost_mode == "none" or ghost_strength <= 0.0:
+        zero = _zero_phase_matrix(len(vector_phase), len(vector_phase[0]) if vector_phase else 0)
+        return GhostSectorResult(
+            ghost_phase=zero,
+            brst_compensated_vector_phase=vector_phase,
+            longitudinal_residual=zero,
+            brst_residual_norm=0.0,
+            nilpotency_defect=0.0,
+            mode=ghost_mode,
+            strength=ghost_strength,
+        )
+    landau_vector = _compute_tensor_channel_matrix(
+        branches_a,
+        branches_b,
+        mediator="vector",
+        mass=mediator_mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        gauge_scheme="landau",
+        gauge_parameter=gauge_parameter,
+        vertex_resummation=vertex_resummation,
+        vertex_strength=vertex_strength,
+    )
+    target_ghost = _phase_matrix_subtract(landau_vector, vector_phase)
+    ghost_phase = _phase_matrix_scale(target_ghost, ghost_strength)
+    compensated = _phase_matrix_add(vector_phase, ghost_phase)
+    residual = _phase_matrix_subtract(compensated, landau_vector)
+    residual_norm = _phase_matrix_max_abs(residual)
+    nilpotency_defect = residual_norm if ghost_mode == "faddeev_popov" else residual_norm * residual_norm
+    return GhostSectorResult(
+        ghost_phase=ghost_phase,
+        brst_compensated_vector_phase=compensated,
+        longitudinal_residual=residual,
+        brst_residual_norm=residual_norm,
+        nilpotency_defect=nilpotency_defect,
+        mode=ghost_mode,
+        strength=ghost_strength,
+    )
+
+
+def _solve_tensor_dyson_schwinger(
+    vector_phase: tuple[tuple[float, ...], ...],
+    gravity_phase: tuple[tuple[float, ...], ...],
+    scalar_phase: tuple[tuple[float, ...], ...],
+    ghost_phase: tuple[tuple[float, ...], ...],
+    *,
+    mode: str,
+    strength: float,
+    iterations: int,
+    tolerance: float,
+    relaxation: float,
+) -> DysonSchwingerResult:
+    if mode == "none" or strength <= 0.0 or iterations <= 0:
+        rows = len(vector_phase)
+        cols = len(vector_phase[0]) if vector_phase else 0
+        return DysonSchwingerResult(
+            dressed_vector_phase=vector_phase,
+            dressed_gravity_phase=gravity_phase,
+            self_energy_kernel=_zero_phase_matrix(rows, cols),
+            iterations=0,
+            residual_norm=0.0,
+            converged=True,
+            mode=mode,
+            strength=strength,
+        )
+    kernel = tuple(
+        tuple(
+            strength * (abs(scalar_phase[i][j]) + abs(ghost_phase[i][j])) / (1.0 + abs(scalar_phase[i][j]) + abs(ghost_phase[i][j]))
+            for j in range(len(vector_phase[i]))
+        )
+        for i in range(len(vector_phase))
+    )
+    current_vector = vector_phase
+    current_gravity = gravity_phase
+    converged = False
+    residual_norm = 0.0
+    relaxation = min(max(relaxation, 1e-6), 1.0)
+    for step in range(1, iterations + 1):
+        updated_vector = []
+        updated_gravity = []
+        for i in range(len(vector_phase)):
+            vector_row: list[float] = []
+            gravity_row: list[float] = []
+            for j in range(len(vector_phase[i])):
+                kernel_ij = kernel[i][j]
+                if mode == "rainbow":
+                    source_vector = current_vector[i][j]
+                    source_gravity = current_gravity[i][j]
+                    denominator_vector = 1.0 + abs(current_vector[i][j])
+                    denominator_gravity = 1.0 + abs(current_gravity[i][j])
+                elif mode == "ladder":
+                    source_vector = current_vector[i][j] + 0.5 * current_gravity[i][j]
+                    source_gravity = current_gravity[i][j] + 0.5 * current_vector[i][j]
+                    denominator_vector = 1.0 + abs(current_vector[i][j] + current_gravity[i][j])
+                    denominator_gravity = denominator_vector
+                else:
+                    source_vector = current_vector[i][j] + current_gravity[i][j]
+                    source_gravity = current_gravity[i][j] + current_vector[i][j]
+                    denominator_vector = 1.0 + abs(current_vector[i][j]) + abs(current_gravity[i][j])
+                    denominator_gravity = denominator_vector
+                vector_row.append(vector_phase[i][j] + kernel_ij * source_vector / max(denominator_vector, 1e-12))
+                gravity_row.append(gravity_phase[i][j] + kernel_ij * source_gravity / max(denominator_gravity, 1e-12))
+            updated_vector.append(tuple(vector_row))
+            updated_gravity.append(tuple(gravity_row))
+        next_vector = _phase_matrix_blend(current_vector, tuple(updated_vector), relaxation=relaxation)
+        next_gravity = _phase_matrix_blend(current_gravity, tuple(updated_gravity), relaxation=relaxation)
+        residual_norm = max(
+            _phase_matrix_max_abs(_phase_matrix_subtract(next_vector, current_vector)),
+            _phase_matrix_max_abs(_phase_matrix_subtract(next_gravity, current_gravity)),
+        )
+        current_vector = next_vector
+        current_gravity = next_gravity
+        if residual_norm <= tolerance:
+            converged = True
+            return DysonSchwingerResult(
+                dressed_vector_phase=current_vector,
+                dressed_gravity_phase=current_gravity,
+                self_energy_kernel=kernel,
+                iterations=step,
+                residual_norm=residual_norm,
+                converged=True,
+                mode=mode,
+                strength=strength,
+            )
+    return DysonSchwingerResult(
+        dressed_vector_phase=current_vector,
+        dressed_gravity_phase=current_gravity,
+        self_energy_kernel=kernel,
+        iterations=iterations,
+        residual_norm=residual_norm,
+        converged=converged,
+        mode=mode,
+        strength=strength,
+    )
+
+
 def compute_proper_time_worldline(
     branch: BranchPath,
     *,
@@ -4698,8 +4965,15 @@ def compute_tensor_mediated_phase_matrix(
     gauge_parameter: float = 1.0,
     vertex_resummation: Literal["none", "geometric", "pade", "exponential"] = "none",
     vertex_strength: float = 1.0,
+    ghost_mode: Literal["none", "faddeev_popov", "brst"] = "none",
+    ghost_strength: float = 1.0,
+    dyson_schwinger_mode: Literal["none", "rainbow", "ladder", "coupled"] = "none",
+    dyson_schwinger_strength: float = 0.5,
+    dyson_schwinger_iterations: int = 12,
+    dyson_schwinger_tolerance: float = 1e-8,
+    dyson_schwinger_relaxation: float = 0.5,
 ) -> TensorMediatedPhaseResult:
-    """spin-1/spin-2 텐서 구조와 게이지/vertex surrogate 를 반영한 위상 행렬을 계산한다."""
+    """spin-1/spin-2 텐서 구조와 gauge/ghost/Dyson-Schwinger surrogate 를 반영한 위상 행렬을 계산한다."""
     effective_scalar_mass = mass
     effective_vector_mass = mediator_mass if mediator_mass > 0.0 else 0.0
     effective_gravity_mass = mediator_mass if mediator_mass > 0.0 else 0.0
@@ -4711,46 +4985,61 @@ def compute_tensor_mediated_phase_matrix(
         quadrature_order=quadrature_order,
     )
 
-    vector_phase = tuple(
-        tuple(
-            _tensor_mediated_pair_phase(
-                branch_a,
-                branch_b,
-                mediator="vector",
-                mass=effective_vector_mass,
-                cutoff=cutoff,
-                propagation=propagation,
-                light_speed=light_speed,
-                quadrature_order=quadrature_order,
-                gauge_scheme=gauge_scheme,
-                gauge_parameter=gauge_parameter,
-                vertex_resummation=vertex_resummation,
-                vertex_strength=vertex_strength,
-            )
-            for branch_b in branches_b
-        )
-        for branch_a in branches_a
+    vector_phase = _compute_tensor_channel_matrix(
+        branches_a,
+        branches_b,
+        mediator="vector",
+        mass=effective_vector_mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        gauge_scheme=gauge_scheme,
+        gauge_parameter=gauge_parameter,
+        vertex_resummation=vertex_resummation,
+        vertex_strength=vertex_strength,
     )
 
-    gravity_phase = tuple(
-        tuple(
-            _tensor_mediated_pair_phase(
-                branch_a,
-                branch_b,
-                mediator="gravity",
-                mass=effective_gravity_mass,
-                cutoff=cutoff,
-                propagation=propagation,
-                light_speed=light_speed,
-                quadrature_order=quadrature_order,
-                gauge_scheme=gauge_scheme,
-                gauge_parameter=gauge_parameter,
-                vertex_resummation=vertex_resummation,
-                vertex_strength=vertex_strength,
-            )
-            for branch_b in branches_b
-        )
-        for branch_a in branches_a
+    gravity_phase = _compute_tensor_channel_matrix(
+        branches_a,
+        branches_b,
+        mediator="gravity",
+        mass=effective_gravity_mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        gauge_scheme=gauge_scheme,
+        gauge_parameter=gauge_parameter,
+        vertex_resummation=vertex_resummation,
+        vertex_strength=vertex_strength,
+    )
+    ghost_sector = _compute_ghost_sector(
+        vector_phase,
+        branches_a=branches_a,
+        branches_b=branches_b,
+        mass=mass,
+        cutoff=cutoff,
+        propagation=propagation,
+        light_speed=light_speed,
+        quadrature_order=quadrature_order,
+        mediator_mass=effective_vector_mass,
+        gauge_parameter=gauge_parameter,
+        vertex_resummation=vertex_resummation,
+        vertex_strength=vertex_strength,
+        ghost_mode=ghost_mode,
+        ghost_strength=ghost_strength,
+    )
+    dyson_schwinger = _solve_tensor_dyson_schwinger(
+        ghost_sector.brst_compensated_vector_phase,
+        gravity_phase,
+        scalar_phase,
+        ghost_sector.ghost_phase,
+        mode=dyson_schwinger_mode,
+        strength=dyson_schwinger_strength,
+        iterations=dyson_schwinger_iterations,
+        tolerance=dyson_schwinger_tolerance,
+        relaxation=dyson_schwinger_relaxation,
     )
 
     return TensorMediatedPhaseResult(
@@ -4762,6 +5051,8 @@ def compute_tensor_mediated_phase_matrix(
         gauge_parameter=gauge_parameter,
         vertex_resummation=vertex_resummation,
         vertex_strength=vertex_strength,
+        ghost_sector=ghost_sector,
+        dyson_schwinger=dyson_schwinger,
     )
 
 

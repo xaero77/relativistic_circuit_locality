@@ -1200,6 +1200,52 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertNotAlmostEqual(bare.vector_phase[0][0], resum.vector_phase[0][0])
         self.assertEqual(resum.vertex_resummation, "pade")
 
+    def test_tensor_mediated_brst_ghost_sector_restores_landau_slice(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.5, 0.5, 0.0))])
+        bare = compute_tensor_mediated_phase_matrix(
+            (source,), (target,), mass=0.5, propagation="instantaneous", mediator_mass=0.8, gauge_scheme="feynman",
+        )
+        brst = compute_tensor_mediated_phase_matrix(
+            (source,),
+            (target,),
+            mass=0.5,
+            propagation="instantaneous",
+            mediator_mass=0.8,
+            gauge_scheme="feynman",
+            ghost_mode="brst",
+            ghost_strength=1.0,
+        )
+        self.assertNotAlmostEqual(brst.ghost_sector.ghost_phase[0][0], 0.0)
+        self.assertNotAlmostEqual(brst.ghost_sector.brst_compensated_vector_phase[0][0], bare.vector_phase[0][0])
+        self.assertAlmostEqual(brst.ghost_sector.brst_residual_norm, 0.0, places=12)
+
+    def test_tensor_mediated_dyson_schwinger_dresses_channels(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.5, 0.0, 0.0)), (2.0, (-0.5, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.5, 0.0, 0.0)), (2.0, (0.5, 0.0, 0.0))])
+        result = compute_tensor_mediated_phase_matrix(
+            (source,),
+            (target,),
+            mass=0.2,
+            propagation="instantaneous",
+            ghost_mode="brst",
+            dyson_schwinger_mode="coupled",
+            dyson_schwinger_strength=0.3,
+            dyson_schwinger_iterations=16,
+            dyson_schwinger_tolerance=1e-7,
+            dyson_schwinger_relaxation=0.6,
+        )
+        self.assertGreater(result.dyson_schwinger.iterations, 0)
+        self.assertTrue(result.dyson_schwinger.converged)
+        self.assertNotAlmostEqual(
+            result.dyson_schwinger.dressed_vector_phase[0][0],
+            result.ghost_sector.brst_compensated_vector_phase[0][0],
+        )
+        self.assertNotAlmostEqual(
+            result.dyson_schwinger.dressed_gravity_phase[0][0],
+            result.gravity_phase[0][0],
+        )
+
     def test_renormalized_phase_matrix_subtracts_self_energy(self) -> None:
         source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
         target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])

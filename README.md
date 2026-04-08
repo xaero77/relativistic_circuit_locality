@@ -33,6 +33,7 @@
 - worldline proper time/Lorentz factor 계산, velocity-dependent tensor mediator (scalar/vector/graviton) 위상, UV renormalization with self-energy subtraction, coherent-state 기반 decoherence/purity, 3-body connected correlation, relativistic backreaction with proper time
 - tensor mediator 에 대해 `projected`/`landau`/`feynman`/`coulomb`/`unitary` gauge surrogate projector 와 separation-dependent nonlocal longitudinal weight 지원
 - tensor mediator 에 대해 `geometric`/`pade`/`exponential` 4D vertex resummation surrogate 지원
+- tensor mediator 에 대해 `faddeev_popov`/`brst` ghost 보정과 self-consistent `rainbow`/`ladder`/`coupled` Dyson-Schwinger dressing 지원
 - von Neumann entropy, negativity, entanglement witness, visibility 진단, mode occupation distribution
 - 1+1D leapfrog finite-difference Klein-Gordon solver (absorbing/reflecting/periodic 경계), 물리적 lattice time stepper with radiation damping
 - Lebedev spherical quadrature (6/14/26-point), Gauss-Legendre order 10 확장, Bessel J1 asymptotic expansion, numpy FFT, retarded time bisection fallback, 3D backreaction gradient
@@ -62,6 +63,7 @@
 - mediator/composite: `CompositeBranch`, `compute_mediated_phase_matrix`, `compute_composite_phase_matrix`, `sample_mediator_field`
 - 물리적 충실도 확장: `ProperTimeWorldline`, `compute_proper_time_worldline`, `TensorMediatedPhaseResult`, `compute_tensor_mediated_phase_matrix`, `RenormalizedPhaseResult`, `compute_renormalized_phase_matrix`, `DecoherenceResult`, `compute_decoherence_model`, `MultiBodyCorrelationResult`, `compute_multi_body_correlation`, `RelativisticForceResult`, `evolve_relativistic_backreaction`
 - tensor mediator 조절 파라미터: `compute_tensor_mediated_phase_matrix`의 `gauge_scheme`, `gauge_parameter`, `vertex_resummation`, `vertex_strength`
+- ghost/Dyson-Schwinger surrogate: `compute_tensor_mediated_phase_matrix`의 `ghost_mode`, `ghost_strength`, `dyson_schwinger_mode`, `dyson_schwinger_strength`, `dyson_schwinger_iterations`, `dyson_schwinger_tolerance`, `dyson_schwinger_relaxation`, 그리고 결과의 `ghost_sector`, `dyson_schwinger`
 - 얽힘 진단: `EntanglementMeasures`, `compute_entanglement_measures`, `ModeOccupationDistribution`, `compute_mode_occupation_distribution`
 - PDE/격자: `FiniteDifferencePdeResult`, `solve_finite_difference_kg`, `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics`
 - Lebedev quadrature: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`

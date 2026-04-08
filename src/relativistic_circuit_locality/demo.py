@@ -263,20 +263,48 @@ def main() -> None:
     proper_time = compute_proper_time_worldline(branches_a[0])
     print("proper_time_A0 =", proper_time.proper_times)
     print("lorentz_factors_A0 =", proper_time.lorentz_factors)
+    tensor_source = BranchPath(
+        label="A_tensor",
+        charge=1.0,
+        points=(
+            TrajectoryPoint(0.0, (-2.0, 0.0, 0.0)),
+            TrajectoryPoint(2.0, (-1.0, 0.5, 0.0)),
+            TrajectoryPoint(4.0, (0.0, 1.0, 0.0)),
+        ),
+    )
+    tensor_target = BranchPath(
+        label="B_tensor",
+        charge=1.0,
+        points=(
+            TrajectoryPoint(0.0, (2.0, 0.0, 0.0)),
+            TrajectoryPoint(2.0, (2.5, 0.5, 0.0)),
+            TrajectoryPoint(4.0, (3.0, 1.0, 0.0)),
+        ),
+    )
     tensor_phase = compute_tensor_mediated_phase_matrix(
-        branches_a,
-        branches_b,
+        (tensor_source,),
+        (tensor_target,),
         mass=0.5,
         propagation="instantaneous",
         gauge_scheme="feynman",
         vertex_resummation="pade",
         vertex_strength=0.5,
+        ghost_mode="brst",
+        dyson_schwinger_mode="coupled",
+        dyson_schwinger_strength=0.3,
+        dyson_schwinger_iterations=24,
+        dyson_schwinger_tolerance=1e-7,
+        dyson_schwinger_relaxation=0.6,
     )
     print("tensor_scalar_phase =", tensor_phase.scalar_phase)
     print("tensor_vector_phase =", tensor_phase.vector_phase)
     print("tensor_gravity_phase =", tensor_phase.gravity_phase)
     print("tensor_gauge_scheme =", tensor_phase.gauge_scheme)
     print("tensor_vertex_resummation =", tensor_phase.vertex_resummation)
+    print("tensor_ghost_phase =", tensor_phase.ghost_sector.ghost_phase)
+    print("tensor_brst_residual_norm =", tensor_phase.ghost_sector.brst_residual_norm)
+    print("tensor_ds_converged =", tensor_phase.dyson_schwinger.converged)
+    print("tensor_ds_dressed_vector_phase =", tensor_phase.dyson_schwinger.dressed_vector_phase)
     renormalized = compute_renormalized_phase_matrix(
         branches_a, branches_b, mass=0.5, cutoff=0.1,
     )
