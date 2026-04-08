@@ -1416,6 +1416,27 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(len(result.spatial_points), 3)
         self.assertEqual(result.refinement_rounds, 1)
 
+    def test_finite_difference_kg_metric_adaptive_remeshing_prefers_weighted_axis(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        points = tuple(
+            (x, y, 0.0)
+            for y in (-2.0, 0.0, 2.0)
+            for x in (-2.0, 0.0, 2.0)
+        )
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.5, 1.0),
+            spatial_points=points,
+            mass=0.5,
+            adaptive_mesh_refinement_rounds=1,
+            adaptive_mesh_radius_factor=0.75,
+            remeshing_metric=((4.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        )
+        xs = sorted({point[0] for point in result.spatial_points})
+        ys = sorted({point[1] for point in result.spatial_points})
+        self.assertGreater(len(xs), len(ys))
+        self.assertEqual(result.remeshing_metric[0][0], 4.0)
+
     def test_finite_difference_kg_fourth_order_stencil_reports_metadata(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
         result = solve_finite_difference_kg(
@@ -1448,6 +1469,29 @@ class ScalarFieldTests(unittest.TestCase):
         for active, value in zip(result.active_point_mask, result.field_values[-1]):
             if not active:
                 self.assertAlmostEqual(value, 0.0)
+
+    def test_finite_difference_kg_cut_cell_boundary_reports_flux_geometry(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        points = tuple(
+            (x, y, 0.0)
+            for y in (-1.0, 0.0, 1.0)
+            for x in (-1.0, 0.0, 1.0)
+        )
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.25, 0.5),
+            spatial_points=points,
+            mass=0.5,
+            boundary_level_set=lambda p: p[0] * p[0] + p[1] * p[1] - 0.85 * 0.85,
+        )
+        self.assertTrue(any(0.0 < fraction < 1.0 for fraction in result.cell_volume_fractions))
+        self.assertTrue(
+            any(
+                0.0 < aperture < 1.0
+                for apertures in result.face_apertures
+                for aperture in apertures
+            )
+        )
 
     def test_physical_lattice_dynamics_leapfrog(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])

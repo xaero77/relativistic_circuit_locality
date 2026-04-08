@@ -714,6 +714,9 @@ class FiniteDifferencePdeResult:
     refinement_rounds: int
     boundary_geometry: str
     active_point_mask: tuple[bool, ...]
+    remeshing_metric: tuple[tuple[float, float, float], ...]
+    cell_volume_fractions: tuple[float, ...]
+    face_apertures: tuple[tuple[float, ...], ...]
 
 
 @dataclass(frozen=True)
@@ -738,6 +741,7 @@ class LebedevQuadratureResult:
 
 
 WidthSpec = float | tuple[float, ...]
+MetricTensor = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
 
 
 def _refine_spatial_points(spatial_points: tuple[Vector3, ...]) -> tuple[Vector3, ...]:
@@ -5388,6 +5392,42 @@ def _axis_spacing(axis: tuple[float, ...]) -> float | None:
     return first
 
 
+def _normalize_metric_tensor(metric: MetricTensor | None) -> MetricTensor:
+    if metric is None:
+        return (
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+    if len(metric) != 3 or any(len(row) != 3 for row in metric):
+        raise ValueError("remeshing_metric must be a 3x3 tensor.")
+    normalized = tuple(tuple(float(value) for value in row) for row in metric)
+    for i in range(3):
+        if normalized[i][i] <= 0.0:
+            raise ValueError("remeshing_metric must have positive diagonal entries.")
+        for j in range(i + 1, 3):
+            if abs(normalized[i][j] - normalized[j][i]) > 1e-9:
+                raise ValueError("remeshing_metric must be symmetric.")
+    return normalized  # type: ignore[return-value]
+
+
+def _metric_axis_scales(metric: MetricTensor) -> tuple[float, float, float]:
+    basis = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    scales: list[float] = []
+    for direction in basis:
+        quadratic = sum(
+            direction[i] * metric[i][j] * direction[j]
+            for i in range(3)
+            for j in range(3)
+        )
+        scales.append(sqrt(max(quadratic, 1e-12)))
+    return (scales[0], scales[1], scales[2])
+
+
 def _source_density_at_point(source: BranchPath, sample_time: float, position: Vector3) -> float:
     src_time = min(max(sample_time, source.time_window[0]), source.time_window[1])
     src_pos = source.position_at(src_time)
@@ -5401,24 +5441,24 @@ def _refine_axis_near_source(
     *,
     rounds: int,
     radius_factor: float,
+    axis_scale: float = 1.0,
 ) -> tuple[float, ...]:
     refined = tuple(axis)
     for _ in range(rounds):
         if len(refined) < 2:
             return refined
         spacing = min(refined[i + 1] - refined[i] for i in range(len(refined) - 1))
-        radius = radius_factor * spacing
-        should_refine = any(
-            any(abs(0.5 * (left + right) - coord) <= radius for coord in source_coords)
-            for left, right in zip(refined, refined[1:])
-        )
-        if not should_refine:
-            continue
         new_values: list[float] = [refined[0]]
         for left, right in zip(refined, refined[1:]):
-            new_values.append(0.5 * (left + right))
+            midpoint = 0.5 * (left + right)
+            metric_radius = radius_factor * spacing * max(axis_scale, 1e-12)
+            if any(abs(midpoint - coord) <= metric_radius for coord in source_coords):
+                new_values.append(midpoint)
             new_values.append(right)
-        refined = tuple(sorted(set(new_values)))
+        updated = tuple(sorted(set(new_values)))
+        if updated == refined:
+            continue
+        refined = updated
     return refined
 
 
@@ -5428,18 +5468,41 @@ def _adaptive_refine_spatial_points(
     *,
     rounds: int,
     radius_factor: float,
+    remeshing_metric: MetricTensor | None = None,
 ) -> tuple[Vector3, ...]:
     if rounds <= 0:
         return spatial_points
     cartesian = _cartesian_grid_metadata(spatial_points)
+    metric = _normalize_metric_tensor(remeshing_metric)
+    raw_axis_scales = _metric_axis_scales(metric)
+    max_scale = max(raw_axis_scales)
+    axis_scales = tuple(scale / max_scale for scale in raw_axis_scales)
     source_x = tuple(point.position[0] for point in source.points)
     source_y = tuple(point.position[1] for point in source.points)
     source_z = tuple(point.position[2] for point in source.points)
     if cartesian is not None:
         xs, ys, zs, _ = cartesian
-        refined_x = _refine_axis_near_source(xs, source_x, rounds=rounds, radius_factor=radius_factor)
-        refined_y = _refine_axis_near_source(ys, source_y, rounds=rounds, radius_factor=radius_factor)
-        refined_z = _refine_axis_near_source(zs, source_z, rounds=rounds, radius_factor=radius_factor)
+        refined_x = _refine_axis_near_source(
+            xs,
+            source_x,
+            rounds=rounds,
+            radius_factor=radius_factor,
+            axis_scale=axis_scales[0],
+        )
+        refined_y = _refine_axis_near_source(
+            ys,
+            source_y,
+            rounds=rounds,
+            radius_factor=radius_factor,
+            axis_scale=axis_scales[1],
+        )
+        refined_z = _refine_axis_near_source(
+            zs,
+            source_z,
+            rounds=rounds,
+            radius_factor=radius_factor,
+            axis_scale=axis_scales[2],
+        )
         return tuple(
             (x, y, z)
             for z in refined_z
@@ -5453,7 +5516,17 @@ def _adaptive_refine_spatial_points(
         radius = radius_factor * min_spacing
         for left, right in zip(refined_points, refined_points[1:]):
             midpoint = _scale(_add(left, right), 0.5)
-            if any(_norm(_sub(midpoint, point.position)) <= radius for point in source.points):
+            metric_distance = min(
+                sqrt(
+                    sum(
+                        _sub(midpoint, point.position)[i] * metric[i][j] * _sub(midpoint, point.position)[j]
+                        for i in range(3)
+                        for j in range(3)
+                    )
+                )
+                for point in source.points
+            )
+            if metric_distance <= radius:
                 new_points.append(midpoint)
             new_points.append(right)
         refined_points = tuple(new_points)
@@ -5489,6 +5562,77 @@ def _finite_difference_boundary_value(
         mirrored[axis] = min(max(mirrored[axis], 0), dims[axis] - 1)
         return phi_curr[mirrored[0] + dims[0] * (mirrored[1] + dims[1] * mirrored[2])]
     return phi_curr[current_index[0] + dims[0] * (current_index[1] + dims[1] * current_index[2])]
+
+
+def _cut_fraction(level_inside: float, level_other: float) -> float:
+    denominator = level_other - level_inside
+    if abs(denominator) <= 1e-12:
+        return 1.0 if level_inside <= 0.0 else 0.0
+    fraction = -level_inside / denominator
+    return min(max(fraction, 1e-6), 1.0)
+
+
+def _cut_cell_geometry(
+    spatial_points: tuple[Vector3, ...],
+    mapping: dict[tuple[int, int, int], int],
+    dims: tuple[int, int, int],
+    axis_spacings: tuple[float | None, float | None, float | None],
+    level_set_values: tuple[float, ...],
+    active_mask: tuple[bool, ...],
+) -> tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]:
+    face_apertures: list[tuple[float, ...]] = [(1.0, 1.0, 1.0, 1.0, 1.0, 1.0) for _ in spatial_points]
+    volume_fractions: list[float] = [1.0 if active else 0.0 for active in active_mask]
+    if not any(spacing is not None for spacing in axis_spacings):
+        return tuple(volume_fractions), tuple(face_apertures)
+
+    for (ix, iy, iz), flat_index in mapping.items():
+        if not active_mask[flat_index]:
+            face_apertures[flat_index] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            volume_fractions[flat_index] = 0.0
+            continue
+        extents: list[tuple[float, float]] = []
+        raw_faces = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        current_level = level_set_values[flat_index]
+        current_index = (ix, iy, iz)
+        for axis, spacing in enumerate(axis_spacings):
+            if spacing is None:
+                extents.append((1.0, 1.0))
+                continue
+            axis_extents: list[float] = []
+            for face_offset, direction in enumerate((-1, 1)):
+                neighbor_index = list(current_index)
+                neighbor_index[axis] += direction
+                neighbor_tuple = (neighbor_index[0], neighbor_index[1], neighbor_index[2])
+                if neighbor_tuple not in mapping:
+                    extent = 1.0
+                else:
+                    neighbor_flat = mapping[neighbor_tuple]
+                    neighbor_level = level_set_values[neighbor_flat]
+                    if active_mask[neighbor_flat]:
+                        extent = 1.0
+                    else:
+                        extent = _cut_fraction(current_level, neighbor_level)
+                axis_extents.append(extent)
+                face_slot = 2 * axis + face_offset
+                raw_faces[face_slot] = extent
+            extents.append((axis_extents[0], axis_extents[1]))
+        axis_fractions = tuple(0.5 * (minus + plus) for minus, plus in extents)
+        volume = 1.0
+        for axis_fraction in axis_fractions:
+            volume *= min(max(axis_fraction, 1e-6), 1.0)
+        volume_fractions[flat_index] = min(max(volume, 1e-6), 1.0)
+
+        weighted_faces = [1.0] * 6
+        for axis in range(3):
+            other_product = 1.0
+            for other_axis, axis_fraction in enumerate(axis_fractions):
+                if other_axis == axis:
+                    continue
+                other_product *= axis_fraction
+            weighted_faces[2 * axis] = raw_faces[2 * axis] * other_product
+            weighted_faces[2 * axis + 1] = raw_faces[2 * axis + 1] * other_product
+        face_apertures[flat_index] = tuple(weighted_faces)
+    return tuple(volume_fractions), tuple(face_apertures)
 
 
 def _laplacian_1d(
@@ -5555,12 +5699,14 @@ def solve_finite_difference_kg(
     stencil_order: Literal[2, 4] = 2,
     adaptive_mesh_refinement_rounds: int = 0,
     adaptive_mesh_radius_factor: float = 1.25,
+    remeshing_metric: MetricTensor | None = None,
     boundary_level_set: Callable[[Vector3], float] | None = None,
 ) -> FiniteDifferencePdeResult:
     """유한차분 leapfrog 방법으로 Klein-Gordon 방정식을 직접 적분한다.
 
     tensor-product Cartesian 격자가 주어지면 3D Laplacian을 사용하고,
-    필요하면 source support 주변 adaptive refinement, 4차 stencil, level-set 곡면 경계를 적용한다.
+    필요하면 source support 주변 adaptive refinement, metric-driven anisotropic remeshing,
+    4차 stencil, level-set cut-cell flux 경계를 적용한다.
     그렇지 않으면 입력 순서를 따라 1D surrogate로 푼다.
     """
     if len(time_slices) < 2:
@@ -5573,12 +5719,14 @@ def solve_finite_difference_kg(
         raise ValueError("adaptive_mesh_refinement_rounds must be non-negative.")
     if adaptive_mesh_radius_factor <= 0.0:
         raise ValueError("adaptive_mesh_radius_factor must be positive.")
+    metric = _normalize_metric_tensor(remeshing_metric)
 
     spatial_points = _adaptive_refine_spatial_points(
         source,
         spatial_points,
         rounds=adaptive_mesh_refinement_rounds,
         radius_factor=adaptive_mesh_radius_factor,
+        remeshing_metric=metric,
     )
 
     dt_values = [time_slices[i + 1] - time_slices[i] for i in range(len(time_slices) - 1)]
@@ -5594,7 +5742,10 @@ def solve_finite_difference_kg(
         dx = min(dx_values) if dx_values else 1.0
         courant = light_speed * dt / max(dx, 1e-12)
         courant_scale = light_speed / max(dx, 1e-12)
+        level_set_values = tuple(_evaluate_boundary_level_set(point, boundary_level_set) for point in spatial_points)
         active_mask = tuple(_evaluate_boundary_level_set(point, boundary_level_set) <= 0.0 for point in spatial_points)
+        cell_volume_fractions = tuple(1.0 if active else 0.0 for active in active_mask)
+        face_apertures = tuple((1.0, 1.0, 1.0, 1.0, 1.0, 1.0) if active else (0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for active in active_mask)
         phi_prev = [0.0] * n_space
         phi_curr = [0.0] * n_space
         for j in range(n_space):
@@ -5656,6 +5807,9 @@ def solve_finite_difference_kg(
             refinement_rounds=adaptive_mesh_refinement_rounds,
             boundary_geometry="level_set" if boundary_level_set is not None else "none",
             active_point_mask=active_mask,
+            remeshing_metric=metric,
+            cell_volume_fractions=cell_volume_fractions,
+            face_apertures=face_apertures,
         )
 
     xs, ys, zs, mapping = cartesian
@@ -5669,7 +5823,17 @@ def solve_finite_difference_kg(
     courant_scale = light_speed * sqrt(sum((1.0 / (spacing * spacing)) for spacing in active_spacings))
     dims = (len(xs), len(ys), len(zs))
     spatial_dimension = sum(1 for size in dims if size > 1)
-    active_mask = tuple(_evaluate_boundary_level_set(point, boundary_level_set) <= 0.0 for point in spatial_points)
+    axis_spacings = (dx, dy, dz)
+    level_set_values = tuple(_evaluate_boundary_level_set(point, boundary_level_set) for point in spatial_points)
+    active_mask = tuple(level <= 0.0 for level in level_set_values)
+    cell_volume_fractions, face_apertures = _cut_cell_geometry(
+        spatial_points,
+        mapping,
+        dims,
+        axis_spacings,
+        level_set_values,
+        active_mask,
+    )
 
     phi_prev = [0.0] * n_space
     phi_curr = [0.0] * n_space
@@ -5680,7 +5844,6 @@ def solve_finite_difference_kg(
             phi_curr[flat_index] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
 
     all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
-    axis_spacings = (dx, dy, dz)
     substeps_per_interval: list[int] = []
     effective_dt_min = inf
     for ti in range(1, len(time_slices)):
@@ -5702,7 +5865,62 @@ def solve_finite_difference_kg(
                     if spacing is None:
                         continue
                     current_index = (ix, iy, iz)
-                    if stencil_order >= 4 and dims[axis] >= 5:
+                    use_cut_cell_flux = boundary_level_set is not None
+                    if use_cut_cell_flux:
+                        volume_fraction = max(cell_volume_fractions[flat_index], 1e-6)
+                        face_minus = face_apertures[flat_index][2 * axis]
+                        face_plus = face_apertures[flat_index][2 * axis + 1]
+                        minus_index = [ix, iy, iz]
+                        plus_index = [ix, iy, iz]
+                        minus_index[axis] -= 1
+                        plus_index[axis] += 1
+                        minus_tuple = (minus_index[0], minus_index[1], minus_index[2])
+                        plus_tuple = (plus_index[0], plus_index[1], plus_index[2])
+
+                        if minus_tuple in mapping:
+                            minus_flat = mapping[minus_tuple]
+                            if active_mask[minus_flat]:
+                                minus_value = phi_curr[minus_flat]
+                                minus_distance = spacing
+                            else:
+                                minus_value = 0.0
+                                minus_distance = spacing * max(_cut_fraction(level_set_values[flat_index], level_set_values[minus_flat]), 1e-6)
+                        else:
+                            minus_value = _finite_difference_boundary_value(
+                                phi_curr,
+                                current_index,
+                                minus_tuple,
+                                axis=axis,
+                                direction=-1,
+                                dims=dims,
+                                boundary=boundary,
+                            )
+                            minus_distance = spacing
+
+                        if plus_tuple in mapping:
+                            plus_flat = mapping[plus_tuple]
+                            if active_mask[plus_flat]:
+                                plus_value = phi_curr[plus_flat]
+                                plus_distance = spacing
+                            else:
+                                plus_value = 0.0
+                                plus_distance = spacing * max(_cut_fraction(level_set_values[flat_index], level_set_values[plus_flat]), 1e-6)
+                        else:
+                            plus_value = _finite_difference_boundary_value(
+                                phi_curr,
+                                current_index,
+                                plus_tuple,
+                                axis=axis,
+                                direction=1,
+                                dims=dims,
+                                boundary=boundary,
+                            )
+                            plus_distance = spacing
+
+                        flux_plus = face_plus * (plus_value - phi_curr[flat_index]) / plus_distance
+                        flux_minus = face_minus * (phi_curr[flat_index] - minus_value) / minus_distance
+                        laplacian += (flux_plus - flux_minus) / (volume_fraction * spacing)
+                    elif stencil_order >= 4 and dims[axis] >= 5:
                         stencil_sum = 0.0
                         for offset, coefficient in ((-2, -1.0), (-1, 16.0), (0, -30.0), (1, 16.0), (2, -1.0)):
                             if offset == 0:
@@ -5811,6 +6029,9 @@ def solve_finite_difference_kg(
         refinement_rounds=adaptive_mesh_refinement_rounds,
         boundary_geometry="level_set" if boundary_level_set is not None else "none",
         active_point_mask=active_mask,
+        remeshing_metric=metric,
+        cell_volume_fractions=cell_volume_fractions,
+        face_apertures=face_apertures,
     )
 
 
