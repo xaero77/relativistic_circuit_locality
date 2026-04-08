@@ -1276,6 +1276,46 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(result.purity, 0.0)
         self.assertLessEqual(result.purity, 1.0)
         self.assertEqual(len(result.decoherence_rates), 1)
+        self.assertEqual(result.thermal_occupations, (0.0, 0.0))
+        self.assertAlmostEqual(result.lindblad_trace, 1.0)
+
+    def test_decoherence_model_thermal_environment_suppresses_off_diagonal(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        momenta = ((0.5, 0.0, 0.0), (0.0, 0.5, 0.0))
+        vacuum = compute_decoherence_model(
+            (source0, source1), (target,), momenta, field_mass=0.5,
+        )
+        thermal = compute_decoherence_model(
+            (source0, source1), (target,), momenta, field_mass=0.5, environment_temperature=0.8,
+        )
+        self.assertGreater(thermal.thermal_occupations[0], 0.0)
+        self.assertLess(abs(thermal.coherence_matrix[0][1]), abs(vacuum.coherence_matrix[0][1]))
+        self.assertLess(thermal.purity, vacuum.purity)
+
+    def test_decoherence_model_lindblad_evolution_preserves_trace(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            lindblad_operators=(
+                (
+                    (0.0 + 0.0j, 1.0 + 0.0j),
+                    (0.0 + 0.0j, 0.0 + 0.0j),
+                ),
+            ),
+            lindblad_rates=(0.7,),
+            lindblad_time=1.5,
+            lindblad_steps=96,
+        )
+        self.assertAlmostEqual(result.lindblad_trace, 1.0, places=8)
+        self.assertGreater(result.coherence_matrix[0][0].real, result.coherence_matrix[1][1].real)
+        self.assertLess(abs(result.coherence_matrix[0][1]), 0.5)
 
     def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
         a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

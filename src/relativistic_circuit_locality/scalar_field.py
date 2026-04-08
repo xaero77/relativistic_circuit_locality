@@ -676,6 +676,8 @@ class DecoherenceResult:
     coherence_matrix: tuple[tuple[complex, ...], ...]
     decoherence_rates: tuple[float, ...]
     purity: float
+    thermal_occupations: tuple[float, ...]
+    lindblad_trace: float
 
 
 @dataclass(frozen=True)
@@ -5130,8 +5132,48 @@ def compute_decoherence_model(
     source_width: float = 0.0,
     quadrature_order: int = 3,
     environment_coupling: float = 0.01,
+    environment_temperature: float | None = None,
+    thermal_occupations: tuple[float, ...] | None = None,
+    lindblad_operators: tuple[tuple[tuple[complex, ...], ...], ...] | None = None,
+    lindblad_rates: tuple[float, ...] | None = None,
+    lindblad_time: float = 0.0,
+    lindblad_steps: int = 64,
 ) -> DecoherenceResult:
-    """field mode 에 대한 partial trace 로 matter 계의 decoherence 를 계산한다."""
+    """field mode partial trace 와 thermal/Lindblad 환경을 포함한 decoherence 를 계산한다."""
+    def _resolve_thermal_occupations() -> tuple[float, ...]:
+        if thermal_occupations is not None:
+            if len(thermal_occupations) != len(momenta):
+                raise ValueError("thermal_occupations must match the number of momenta.")
+            return tuple(max(float(occupation), 0.0) for occupation in thermal_occupations)
+        if environment_temperature is None or environment_temperature <= 0.0:
+            return tuple(0.0 for _ in momenta)
+        occupations: list[float] = []
+        for momentum in momenta:
+            omega = sqrt(_dot(momentum, momentum) + field_mass * field_mass)
+            beta_omega = omega / environment_temperature
+            if beta_omega > 700.0:
+                occupations.append(0.0)
+            else:
+                occupations.append(1.0 / max(exp(beta_omega) - 1.0, 1e-12))
+        return tuple(occupations)
+
+    def _lindblad_rhs(
+        density_matrix: np.ndarray,
+        operators: tuple[np.ndarray, ...],
+        rates: tuple[float, ...],
+    ) -> np.ndarray:
+        derivative = np.zeros_like(density_matrix, dtype=complex)
+        for operator, rate in zip(operators, rates):
+            if rate == 0.0:
+                continue
+            adjoint = operator.conj().T
+            number_operator = adjoint @ operator
+            derivative += rate * (
+                operator @ density_matrix @ adjoint
+                - 0.5 * (number_operator @ density_matrix + density_matrix @ number_operator)
+            )
+        return derivative
+
     pair_displacements = compute_branch_pair_displacements(
         branches_a, branches_b, momenta,
         field_mass=field_mass,
@@ -5141,9 +5183,9 @@ def compute_decoherence_model(
     n_a = len(branches_a)
     n_b = len(branches_b)
     n_total = n_a * n_b
+    resolved_thermal_occupations = _resolve_thermal_occupations()
     # coherence matrix: ρ((r,s),(r',s')) = <field_{rs}|field_{r's'}>
     coherence: list[list[complex]] = []
-    decoherence_rates: list[float] = []
     for r in range(n_a):
         for s in range(n_b):
             row: list[complex] = []
@@ -5151,28 +5193,63 @@ def compute_decoherence_model(
                 for sp in range(n_b):
                     alpha_rs = pair_displacements[r][s]
                     alpha_rps = pair_displacements[rp][sp]
-                    diff_sq = sum(abs(a - b) ** 2 for a, b in zip(alpha_rs, alpha_rps))
-                    suppression = exp(-0.5 * diff_sq * (1.0 + environment_coupling))
+                    thermal_diff_sq = sum(
+                        abs(a - b) ** 2 * (2.0 * occupation + 1.0)
+                        for a, b, occupation in zip(alpha_rs, alpha_rps, resolved_thermal_occupations)
+                    )
+                    suppression = exp(-0.5 * thermal_diff_sq * (1.0 + environment_coupling))
                     phase = compute_displacement_operator_phase(alpha_rs, alpha_rps)
                     row.append(suppression * complex_exp(1j * phase))
             coherence.append(row)
+    density_matrix = np.array(coherence, dtype=complex) / float(n_total)
+
+    if lindblad_operators is not None:
+        if lindblad_steps <= 0:
+            raise ValueError("lindblad_steps must be positive.")
+        if lindblad_rates is None:
+            resolved_rates = tuple(1.0 for _ in lindblad_operators)
+        else:
+            if len(lindblad_rates) != len(lindblad_operators):
+                raise ValueError("lindblad_rates must match lindblad_operators.")
+            resolved_rates = tuple(float(rate) for rate in lindblad_rates)
+        operator_matrices: list[np.ndarray] = []
+        for operator in lindblad_operators:
+            if len(operator) != n_total or any(len(row) != n_total for row in operator):
+                raise ValueError("Each Lindblad operator must be a square matrix with dimension n_total.")
+            operator_matrices.append(np.array(operator, dtype=complex))
+        if lindblad_time != 0.0:
+            dt = lindblad_time / float(lindblad_steps)
+            operators_tuple = tuple(operator_matrices)
+            for _ in range(lindblad_steps):
+                k1 = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
+                k2 = _lindblad_rhs(density_matrix + 0.5 * dt * k1, operators_tuple, resolved_rates)
+                k3 = _lindblad_rhs(density_matrix + 0.5 * dt * k2, operators_tuple, resolved_rates)
+                k4 = _lindblad_rhs(density_matrix + dt * k3, operators_tuple, resolved_rates)
+                density_matrix = density_matrix + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+                density_matrix = 0.5 * (density_matrix + density_matrix.conj().T)
+                trace_value = np.trace(density_matrix)
+                if abs(trace_value) > 1e-12:
+                    density_matrix = density_matrix / trace_value
+
+    coherence_matrix = tuple(
+        tuple(complex(value) for value in row)
+        for row in (density_matrix * float(n_total))
+    )
+    decoherence_rates: list[float] = []
     # decoherence rate: off-diagonal decay
     for i in range(n_total):
         rate = 0.0
         for j in range(n_total):
             if i != j:
-                rate += 1.0 - abs(coherence[i][j])
+                rate += 1.0 - min(abs(coherence_matrix[i][j]), 1.0)
         decoherence_rates.append(rate / max(n_total - 1, 1))
-    # purity: Tr(ρ²)
-    purity = 0.0
-    for i in range(n_total):
-        for j in range(n_total):
-            purity += abs(coherence[i][j]) ** 2
-    purity /= n_total * n_total
+    purity = float(np.trace(density_matrix @ density_matrix).real)
     return DecoherenceResult(
-        coherence_matrix=tuple(tuple(row) for row in coherence),
+        coherence_matrix=coherence_matrix,
         decoherence_rates=tuple(decoherence_rates),
         purity=purity,
+        thermal_occupations=resolved_thermal_occupations,
+        lindblad_trace=float(np.trace(density_matrix).real),
     )
 
 
