@@ -1279,6 +1279,8 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.thermal_occupations, (0.0, 0.0))
         self.assertEqual(result.spectral_weights, (1.0, 1.0))
         self.assertEqual(result.memory_kernel_norm, 0.0)
+        self.assertEqual(result.generated_lindblad_rates, tuple())
+        self.assertEqual(result.detailed_balance_deviation, 0.0)
         self.assertAlmostEqual(result.lindblad_trace, 1.0)
 
     def test_decoherence_model_thermal_environment_suppresses_off_diagonal(self) -> None:
@@ -1376,6 +1378,28 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(non_markov.memory_kernel_norm, 0.0)
         self.assertAlmostEqual(non_markov.lindblad_trace, 1.0, places=8)
         self.assertNotAlmostEqual(non_markov.purity, markov.purity)
+
+    def test_decoherence_model_auto_generates_kms_lindblad_rates(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            environment_temperature=0.7,
+            bath_spectral_density=lambda omega: 1.0 + 0.5 * omega,
+            auto_lindblad_from_bath=True,
+            lindblad_time=1.0,
+            lindblad_steps=64,
+            dephasing_rate_scale=0.25,
+            system_transition_energies=(0.0, 1.2),
+        )
+        self.assertGreater(len(result.generated_lindblad_rates), 0)
+        self.assertLess(result.detailed_balance_deviation, 1e-10)
+        self.assertAlmostEqual(result.lindblad_trace, 1.0, places=8)
+        self.assertLess(result.purity, 1.0)
 
     def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
         a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

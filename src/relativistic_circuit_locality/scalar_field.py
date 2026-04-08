@@ -679,6 +679,8 @@ class DecoherenceResult:
     thermal_occupations: tuple[float, ...]
     spectral_weights: tuple[float, ...]
     memory_kernel_norm: float
+    generated_lindblad_rates: tuple[float, ...]
+    detailed_balance_deviation: float
     lindblad_trace: float
 
 
@@ -5141,6 +5143,10 @@ def compute_decoherence_model(
     lindblad_rates: tuple[float, ...] | None = None,
     lindblad_time: float = 0.0,
     lindblad_steps: int = 64,
+    auto_lindblad_from_bath: bool = False,
+    system_transition_energies: tuple[float, ...] | None = None,
+    detailed_balance_temperature: float | None = None,
+    dephasing_rate_scale: float = 0.0,
     memory_kernel: Callable[[float], float] | None = None,
     memory_times: tuple[float, ...] | None = None,
     memory_strength: float = 0.0,
@@ -5242,6 +5248,73 @@ def compute_decoherence_model(
             )
         return derivative
 
+    def _resolve_branch_energies() -> tuple[float, ...]:
+        if system_transition_energies is not None:
+            if len(system_transition_energies) != n_total:
+                raise ValueError("system_transition_energies must have length n_total.")
+            return tuple(float(energy) for energy in system_transition_energies)
+        inferred_energies: list[float] = []
+        for r in range(n_a):
+            for s in range(n_b):
+                inferred_energies.append(
+                    sum(abs(amplitude) ** 2 for amplitude in pair_displacements[r][s])
+                )
+        return tuple(inferred_energies)
+
+    def _generate_bath_lindblad_terms() -> tuple[tuple[np.ndarray, ...], tuple[float, ...], float]:
+        if not auto_lindblad_from_bath:
+            return tuple(), tuple(), 0.0
+        energies = _resolve_branch_energies()
+        ground_index = min(range(n_total), key=lambda index: energies[index])
+        bath_temperature = (
+            detailed_balance_temperature
+            if detailed_balance_temperature is not None
+            else environment_temperature
+        )
+        operators: list[np.ndarray] = []
+        rates: list[float] = []
+        detailed_balance_deviation = 0.0
+        for excited_index, excited_energy in enumerate(energies):
+            if excited_index == ground_index:
+                continue
+            gap = max(excited_energy - energies[ground_index], 0.0)
+            spectral_value = (
+                max(float(bath_spectral_density(gap)), 0.0)
+                if bath_spectral_density is not None
+                else 1.0
+            )
+            if bath_temperature is None or bath_temperature <= 0.0 or gap <= 0.0:
+                thermal_factor = 0.0
+                expected_ratio = 0.0
+            else:
+                beta_gap = gap / bath_temperature
+                if beta_gap > 700.0:
+                    thermal_factor = 0.0
+                    expected_ratio = 0.0
+                else:
+                    exp_beta_gap = exp(beta_gap)
+                    thermal_factor = 1.0 / max(exp_beta_gap - 1.0, 1e-12)
+                    expected_ratio = exp(-beta_gap)
+            emission_rate = environment_coupling * spectral_value * (thermal_factor + 1.0)
+            absorption_rate = environment_coupling * spectral_value * thermal_factor
+            lowering = np.zeros((n_total, n_total), dtype=complex)
+            lowering[ground_index, excited_index] = 1.0
+            raising = np.zeros((n_total, n_total), dtype=complex)
+            raising[excited_index, ground_index] = 1.0
+            operators.extend((lowering, raising))
+            rates.extend((emission_rate, absorption_rate))
+            if emission_rate > 1e-15:
+                detailed_balance_deviation = max(
+                    detailed_balance_deviation,
+                    abs(absorption_rate / emission_rate - expected_ratio),
+                )
+            if dephasing_rate_scale > 0.0:
+                projector = np.zeros((n_total, n_total), dtype=complex)
+                projector[excited_index, excited_index] = 1.0
+                operators.append(projector)
+                rates.append(dephasing_rate_scale * environment_coupling * spectral_value * (2.0 * thermal_factor + 1.0))
+        return tuple(operators), tuple(rates), detailed_balance_deviation
+
     def _memory_rhs(
         current_time: float,
         history_times: tuple[float, ...],
@@ -5297,21 +5370,30 @@ def compute_decoherence_model(
                     row.append(suppression * complex_exp(1j * phase))
             coherence.append(row)
     density_matrix = np.array(coherence, dtype=complex) / float(n_total)
+    generated_lindblad_rates: tuple[float, ...] = tuple()
+    detailed_balance_deviation = 0.0
 
-    if lindblad_operators is not None:
+    operator_matrices: tuple[np.ndarray, ...] = tuple()
+    resolved_rates: tuple[float, ...] = tuple()
+    if lindblad_operators is not None or auto_lindblad_from_bath:
         if lindblad_steps <= 0:
             raise ValueError("lindblad_steps must be positive.")
-        if lindblad_rates is None:
-            resolved_rates = tuple(1.0 for _ in lindblad_operators)
+        if lindblad_operators is not None:
+            if lindblad_rates is None:
+                resolved_rates = tuple(1.0 for _ in lindblad_operators)
+            else:
+                if len(lindblad_rates) != len(lindblad_operators):
+                    raise ValueError("lindblad_rates must match lindblad_operators.")
+                resolved_rates = tuple(float(rate) for rate in lindblad_rates)
+            operator_matrices_list: list[np.ndarray] = []
+            for operator in lindblad_operators:
+                if len(operator) != n_total or any(len(row) != n_total for row in operator):
+                    raise ValueError("Each Lindblad operator must be a square matrix with dimension n_total.")
+                operator_matrices_list.append(np.array(operator, dtype=complex))
+            operator_matrices = tuple(operator_matrices_list)
         else:
-            if len(lindblad_rates) != len(lindblad_operators):
-                raise ValueError("lindblad_rates must match lindblad_operators.")
-            resolved_rates = tuple(float(rate) for rate in lindblad_rates)
-        operator_matrices: list[np.ndarray] = []
-        for operator in lindblad_operators:
-            if len(operator) != n_total or any(len(row) != n_total for row in operator):
-                raise ValueError("Each Lindblad operator must be a square matrix with dimension n_total.")
-            operator_matrices.append(np.array(operator, dtype=complex))
+            operator_matrices, resolved_rates, detailed_balance_deviation = _generate_bath_lindblad_terms()
+            generated_lindblad_rates = resolved_rates
         if lindblad_time != 0.0:
             dt = lindblad_time / float(lindblad_steps)
             operators_tuple = tuple(operator_matrices)
@@ -5356,6 +5438,8 @@ def compute_decoherence_model(
         thermal_occupations=resolved_thermal_occupations,
         spectral_weights=spectral_weights,
         memory_kernel_norm=memory_kernel_norm,
+        generated_lindblad_rates=generated_lindblad_rates,
+        detailed_balance_deviation=detailed_balance_deviation,
         lindblad_trace=float(np.trace(density_matrix).real),
     )
 
