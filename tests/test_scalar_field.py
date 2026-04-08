@@ -1171,6 +1171,35 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertNotAlmostEqual(parallel.gravity_phase[0][0], transverse.gravity_phase[0][0])
 
+    def test_tensor_mediated_gauge_scheme_changes_vector_phase(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.5, 0.5, 0.0))])
+        landau = compute_tensor_mediated_phase_matrix(
+            (source,), (target,), mass=0.5, propagation="instantaneous", mediator_mass=0.8, gauge_scheme="landau",
+        )
+        feynman = compute_tensor_mediated_phase_matrix(
+            (source,), (target,), mass=0.5, propagation="instantaneous", mediator_mass=0.8, gauge_scheme="feynman",
+        )
+        self.assertNotAlmostEqual(landau.vector_phase[0][0], feynman.vector_phase[0][0])
+        self.assertEqual(feynman.gauge_scheme, "feynman")
+
+    def test_tensor_mediated_vertex_resummation_changes_tensor_phase(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.5, 0.0, 0.0)), (2.0, (-0.5, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.5, 0.0, 0.0)), (2.0, (0.5, 0.0, 0.0))])
+        bare = compute_tensor_mediated_phase_matrix(
+            (source,), (target,), mass=0.2, propagation="instantaneous", vertex_resummation="none",
+        )
+        resum = compute_tensor_mediated_phase_matrix(
+            (source,),
+            (target,),
+            mass=0.2,
+            propagation="instantaneous",
+            vertex_resummation="pade",
+            vertex_strength=0.75,
+        )
+        self.assertNotAlmostEqual(bare.vector_phase[0][0], resum.vector_phase[0][0])
+        self.assertEqual(resum.vertex_resummation, "pade")
+
     def test_renormalized_phase_matrix_subtracts_self_energy(self) -> None:
         source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
         target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])

@@ -640,6 +640,10 @@ class TensorMediatedPhaseResult:
     vector_phase: tuple[tuple[float, ...], ...]
     gravity_phase: tuple[tuple[float, ...], ...]
     mediator_mass: float
+    gauge_scheme: str
+    gauge_parameter: float
+    vertex_resummation: str
+    vertex_strength: float
 
 
 @dataclass(frozen=True)
@@ -4490,15 +4494,19 @@ def _vector_polarization_factor(
     *,
     light_speed: float,
     mediator_mass: float,
+    gauge_scheme: str,
+    gauge_parameter: float,
 ) -> float:
     """spin-1 current-current contraction을 transverse/longitudinal projector와 함께 근사한다."""
     gamma_a = _lorentz_factor(v_a, light_speed)
     gamma_b = _lorentz_factor(v_b, light_speed)
     beta_a = _scale(v_a, 1.0 / light_speed)
     beta_b = _scale(v_b, 1.0 / light_speed)
-    projector = _transverse_projector(
+    projector = _gauge_fixed_projector(
         separation,
-        longitudinal_weight=_longitudinal_projector_weight(_norm(separation), mediator_mass),
+        mediator_mass=mediator_mass,
+        gauge_scheme=gauge_scheme,
+        gauge_parameter=gauge_parameter,
     )
     spatial_term = _dot(beta_a, _matrix_vector_multiply(projector, beta_b))
     return max(gamma_a * gamma_b - gamma_a * gamma_b * spatial_term, 0.0)
@@ -4511,15 +4519,19 @@ def _graviton_tensor_factor(
     *,
     light_speed: float,
     mediator_mass: float,
+    gauge_scheme: str,
+    gauge_parameter: float,
 ) -> float:
     """spin-2 exchange를 traceless stress projector contraction으로 근사한다."""
     gamma_a = _lorentz_factor(v_a, light_speed)
     gamma_b = _lorentz_factor(v_b, light_speed)
     beta_a = _scale(v_a, 1.0 / light_speed)
     beta_b = _scale(v_b, 1.0 / light_speed)
-    projector = _transverse_projector(
+    projector = _gauge_fixed_projector(
         separation,
-        longitudinal_weight=_longitudinal_projector_weight(_norm(separation), mediator_mass),
+        mediator_mass=mediator_mass,
+        gauge_scheme=gauge_scheme,
+        gauge_parameter=gauge_parameter,
     )
     transverse_a = _matrix_vector_multiply(projector, beta_a)
     transverse_b = _matrix_vector_multiply(projector, beta_b)
@@ -4531,6 +4543,54 @@ def _graviton_tensor_factor(
     energy_term = (gamma_a * gamma_b) ** 2
     momentum_term = 2.0 * gamma_a * gamma_b * _dot(transverse_a, transverse_b)
     return max(energy_term + momentum_term + traceless_contraction, 0.0)
+
+
+def _gauge_fixed_projector(
+    separation: Vector3,
+    *,
+    mediator_mass: float,
+    gauge_scheme: str,
+    gauge_parameter: float,
+) -> tuple[tuple[float, float, float], ...]:
+    """분리벡터 의존 비국소 게이지 고정 surrogate projector."""
+    distance = _norm(separation)
+    base_longitudinal = _longitudinal_projector_weight(distance, mediator_mass)
+    xi = max(gauge_parameter, 0.0)
+    scale = mediator_mass * max(distance, 1e-12)
+    nonlocal_weight = 1.0 / (1.0 + scale * scale)
+    if gauge_scheme == "landau":
+        longitudinal_weight = 0.0
+    elif gauge_scheme == "feynman":
+        longitudinal_weight = base_longitudinal + xi * nonlocal_weight * (1.0 - base_longitudinal)
+    elif gauge_scheme == "coulomb":
+        longitudinal_weight = base_longitudinal * (1.0 + 0.25 * xi * nonlocal_weight)
+    elif gauge_scheme == "unitary":
+        longitudinal_weight = base_longitudinal + xi * (1.0 - nonlocal_weight) * (1.0 - base_longitudinal)
+    else:
+        longitudinal_weight = base_longitudinal
+    return _transverse_projector(
+        separation,
+        longitudinal_weight=min(max(longitudinal_weight, 0.0), 1.0),
+    )
+
+
+def _vertex_resummation_factor(
+    local_phase_density: float,
+    *,
+    scheme: str,
+    strength: float,
+) -> float:
+    """4D vertex ladder/rainbow 재합산을 모사하는 안정한 국소 보정."""
+    if scheme == "none" or strength <= 0.0:
+        return 1.0
+    expansion = min(max(abs(local_phase_density) * strength, 0.0), 0.95)
+    if scheme == "geometric":
+        return 1.0 / (1.0 - expansion)
+    if scheme == "pade":
+        return (1.0 + 0.5 * expansion) / max(1.0 - 0.5 * expansion, 1e-12)
+    if scheme == "exponential":
+        return exp(expansion)
+    return 1.0
 
 
 def compute_proper_time_worldline(
@@ -4564,6 +4624,10 @@ def _tensor_mediated_pair_phase(
     propagation: Literal["instantaneous", "retarded", "time_symmetric", "causal_history", "kg_retarded"],
     light_speed: float,
     quadrature_order: int,
+    gauge_scheme: str,
+    gauge_parameter: float,
+    vertex_resummation: str,
+    vertex_strength: float,
 ) -> float:
     """텐서 구조를 반영한 pair phase 를 계산한다."""
     grid = _shared_time_grid(branch_a, branch_b)
@@ -4585,6 +4649,8 @@ def _tensor_mediated_pair_phase(
                     v_a, v_b, separation,
                     light_speed=light_speed,
                     mediator_mass=mass,
+                    gauge_scheme=gauge_scheme,
+                    gauge_parameter=gauge_parameter,
                 )
                 phase_sign = -1.0
                 effective_mass = mass
@@ -4593,6 +4659,8 @@ def _tensor_mediated_pair_phase(
                     v_a, v_b, separation,
                     light_speed=light_speed,
                     mediator_mass=mass,
+                    gauge_scheme=gauge_scheme,
+                    gauge_parameter=gauge_parameter,
                 )
                 phase_sign = 1.0
                 effective_mass = mass
@@ -4605,7 +4673,13 @@ def _tensor_mediated_pair_phase(
                 mass=effective_mass, cutoff=cutoff, propagation=propagation,
                 light_speed=light_speed, quadrature_order=quadrature_order,
             )
-            segment += weight * tensor_factor * field_val
+            local_density = _mediator_pair_coupling(branch_a, branch_b, mediator) * tensor_factor * field_val
+            resummation = _vertex_resummation_factor(
+                local_density,
+                scheme=vertex_resummation,
+                strength=vertex_strength,
+            )
+            segment += weight * tensor_factor * field_val * resummation
         phase -= phase_sign * _mediator_pair_coupling(branch_a, branch_b, mediator) * segment * half_width
     return phase
 
@@ -4620,8 +4694,12 @@ def compute_tensor_mediated_phase_matrix(
     light_speed: float = 1.0,
     quadrature_order: int = 3,
     mediator_mass: float = 0.0,
+    gauge_scheme: Literal["projected", "landau", "feynman", "coulomb", "unitary"] = "projected",
+    gauge_parameter: float = 1.0,
+    vertex_resummation: Literal["none", "geometric", "pade", "exponential"] = "none",
+    vertex_strength: float = 1.0,
 ) -> TensorMediatedPhaseResult:
-    """spin-1/spin-2 텐서 구조와 massive mediator 를 반영한 위상 행렬을 계산한다."""
+    """spin-1/spin-2 텐서 구조와 게이지/vertex surrogate 를 반영한 위상 행렬을 계산한다."""
     effective_scalar_mass = mass
     effective_vector_mass = mediator_mass if mediator_mass > 0.0 else 0.0
     effective_gravity_mass = mediator_mass if mediator_mass > 0.0 else 0.0
@@ -4644,6 +4722,10 @@ def compute_tensor_mediated_phase_matrix(
                 propagation=propagation,
                 light_speed=light_speed,
                 quadrature_order=quadrature_order,
+                gauge_scheme=gauge_scheme,
+                gauge_parameter=gauge_parameter,
+                vertex_resummation=vertex_resummation,
+                vertex_strength=vertex_strength,
             )
             for branch_b in branches_b
         )
@@ -4661,6 +4743,10 @@ def compute_tensor_mediated_phase_matrix(
                 propagation=propagation,
                 light_speed=light_speed,
                 quadrature_order=quadrature_order,
+                gauge_scheme=gauge_scheme,
+                gauge_parameter=gauge_parameter,
+                vertex_resummation=vertex_resummation,
+                vertex_strength=vertex_strength,
             )
             for branch_b in branches_b
         )
@@ -4672,6 +4758,10 @@ def compute_tensor_mediated_phase_matrix(
         vector_phase=vector_phase,
         gravity_phase=gravity_phase,
         mediator_mass=mediator_mass,
+        gauge_scheme=gauge_scheme,
+        gauge_parameter=gauge_parameter,
+        vertex_resummation=vertex_resummation,
+        vertex_strength=vertex_strength,
     )
 
 

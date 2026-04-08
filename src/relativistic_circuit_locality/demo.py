@@ -264,11 +264,19 @@ def main() -> None:
     print("proper_time_A0 =", proper_time.proper_times)
     print("lorentz_factors_A0 =", proper_time.lorentz_factors)
     tensor_phase = compute_tensor_mediated_phase_matrix(
-        branches_a, branches_b, mass=0.5, propagation="instantaneous",
+        branches_a,
+        branches_b,
+        mass=0.5,
+        propagation="instantaneous",
+        gauge_scheme="feynman",
+        vertex_resummation="pade",
+        vertex_strength=0.5,
     )
     print("tensor_scalar_phase =", tensor_phase.scalar_phase)
     print("tensor_vector_phase =", tensor_phase.vector_phase)
     print("tensor_gravity_phase =", tensor_phase.gravity_phase)
+    print("tensor_gauge_scheme =", tensor_phase.gauge_scheme)
+    print("tensor_vertex_resummation =", tensor_phase.vertex_resummation)
     renormalized = compute_renormalized_phase_matrix(
         branches_a, branches_b, mass=0.5, cutoff=0.1,
     )
