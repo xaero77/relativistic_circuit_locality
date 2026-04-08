@@ -1287,6 +1287,9 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.bath_dressing_norm, 0.0)
         self.assertEqual(result.influence_phase_matrix, ((0.0,),))
         self.assertEqual(result.non_gaussian_cumulant_norm, 0.0)
+        self.assertEqual(result.influence_iterations, 1)
+        self.assertEqual(result.influence_residual, 0.0)
+        self.assertTrue(result.influence_converged)
         self.assertAlmostEqual(result.lindblad_trace, 1.0)
 
     def test_decoherence_model_thermal_environment_suppresses_off_diagonal(self) -> None:
@@ -1492,6 +1495,26 @@ class ScalarFieldTests(unittest.TestCase):
             influenced.coherence_matrix[0][1].imag,
             base.coherence_matrix[0][1].imag,
         )
+
+    def test_decoherence_model_self_consistent_influence_resummation_converges(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            bath_spectral_density=lambda omega: 1.0 / (1.0 + omega),
+            colored_noise_correlation=lambda tau: exp(-tau),
+            influence_phase_strength=0.15,
+            influence_iterations=16,
+            influence_tolerance=1e-4,
+            influence_relaxation=0.6,
+        )
+        self.assertGreaterEqual(result.influence_iterations, 1)
+        self.assertLessEqual(result.influence_residual, 1e-4)
+        self.assertTrue(result.influence_converged)
 
     def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
         a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

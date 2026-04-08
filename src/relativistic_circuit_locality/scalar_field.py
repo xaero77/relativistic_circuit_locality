@@ -687,6 +687,9 @@ class DecoherenceResult:
     bath_dressing_norm: float
     influence_phase_matrix: tuple[tuple[float, ...], ...]
     non_gaussian_cumulant_norm: float
+    influence_iterations: int
+    influence_residual: float
+    influence_converged: bool
     lindblad_trace: float
 
 
@@ -5162,6 +5165,9 @@ def compute_decoherence_model(
     influence_phase_strength: float = 0.0,
     non_gaussian_cumulant: Callable[[float, float], float] | None = None,
     non_gaussian_cumulant_strength: float = 0.0,
+    influence_iterations: int = 1,
+    influence_tolerance: float = 1e-8,
+    influence_relaxation: float = 0.5,
     memory_kernel: Callable[[float], float] | None = None,
     memory_times: tuple[float, ...] | None = None,
     memory_strength: float = 0.0,
@@ -5410,6 +5416,7 @@ def compute_decoherence_model(
     def _compute_influence_functional_terms(
         energies: tuple[float, ...],
         resolved_grid: tuple[float, ...],
+        coherence_weights: tuple[tuple[float, ...], ...] | None = None,
     ) -> tuple[tuple[tuple[float, ...], ...], float]:
         influence_phase: list[list[float]] = []
         cumulant_norm = 0.0
@@ -5434,7 +5441,10 @@ def compute_decoherence_model(
                         if colored_noise_correlation is not None
                         else 1.0
                     )
-                    phase_value += dt_segment * influence_phase_strength * spectral_value * noise_value
+                    weight = 1.0
+                    if coherence_weights is not None:
+                        weight += coherence_weights[i][j]
+                    phase_value += dt_segment * influence_phase_strength * spectral_value * noise_value * weight
                     if non_gaussian_cumulant is not None and non_gaussian_cumulant_strength != 0.0:
                         cumulant_value = non_gaussian_cumulant(left, right)
                         phase_value += non_gaussian_cumulant_strength * dt_segment * cumulant_value
@@ -5442,6 +5452,34 @@ def compute_decoherence_model(
                 row.append(phase_value)
             influence_phase.append(row)
         return tuple(tuple(row) for row in influence_phase), cumulant_norm * abs(non_gaussian_cumulant_strength)
+
+    def _compute_coherence_matrix_with_influence(
+        active_influence_phase: tuple[tuple[float, ...], ...],
+    ) -> tuple[tuple[complex, ...], ...]:
+        coherence: list[list[complex]] = []
+        for r in range(n_a):
+            for s in range(n_b):
+                row: list[complex] = []
+                for rp in range(n_a):
+                    for sp in range(n_b):
+                        alpha_rs = pair_displacements[r][s]
+                        alpha_rps = pair_displacements[rp][sp]
+                        thermal_diff_sq = sum(
+                            abs(a - b) ** 2 * (2.0 * occupation + 1.0)
+                            for a, b, occupation in zip(alpha_rs, alpha_rps, resolved_thermal_occupations)
+                        )
+                        suppression_strength = (
+                            1.0
+                            + environment_coupling
+                            + colored_noise_norm
+                            + memory_strength * memory_kernel_norm
+                        )
+                        suppression = exp(-0.5 * thermal_diff_sq * suppression_strength)
+                        phase = compute_displacement_operator_phase(alpha_rs, alpha_rps)
+                        phase += active_influence_phase[r * n_b + s][rp * n_b + sp]
+                        row.append(suppression * complex_exp(1j * phase))
+                coherence.append(row)
+        return tuple(tuple(row) for row in coherence)
 
     def _memory_rhs(
         current_time: float,
@@ -5476,35 +5514,48 @@ def compute_decoherence_model(
     memory_kernel_norm = _compute_memory_kernel_norm(resolved_memory_times)
     branch_energies = _resolve_branch_energies()
     resolved_influence_grid = _resolve_influence_time_grid()
-    influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
+    if influence_iterations <= 0:
+        raise ValueError("influence_iterations must be positive.")
+    if not 0.0 < influence_relaxation <= 1.0:
+        raise ValueError("influence_relaxation must be in (0, 1].")
+    base_influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
         branch_energies,
         resolved_influence_grid,
     )
-    # coherence matrix: ρ((r,s),(r',s')) = <field_{rs}|field_{r's'}>
-    coherence: list[list[complex]] = []
-    for r in range(n_a):
-        for s in range(n_b):
-            row: list[complex] = []
-            for rp in range(n_a):
-                for sp in range(n_b):
-                    alpha_rs = pair_displacements[r][s]
-                    alpha_rps = pair_displacements[rp][sp]
-                    thermal_diff_sq = sum(
-                        abs(a - b) ** 2 * (2.0 * occupation + 1.0)
-                        for a, b, occupation in zip(alpha_rs, alpha_rps, resolved_thermal_occupations)
-                    )
-                    suppression_strength = (
-                        1.0
-                        + environment_coupling
-                        + colored_noise_norm
-                        + memory_strength * memory_kernel_norm
-                    )
-                    suppression = exp(-0.5 * thermal_diff_sq * suppression_strength)
-                    phase = compute_displacement_operator_phase(alpha_rs, alpha_rps)
-                    phase += influence_phase_matrix[r * n_b + s][rp * n_b + sp]
-                    row.append(suppression * complex_exp(1j * phase))
-            coherence.append(row)
-    density_matrix = np.array(coherence, dtype=complex) / float(n_total)
+    influence_phase_matrix = base_influence_phase_matrix
+    influence_residual = 0.0
+    influence_steps_taken = 0
+    influence_converged = influence_iterations == 1
+    coherence_matrix_current = _compute_coherence_matrix_with_influence(influence_phase_matrix)
+    for iteration in range(influence_iterations):
+        influence_steps_taken = iteration + 1
+        coherence_weights = tuple(
+            tuple(abs(value) for value in row)
+            for row in coherence_matrix_current
+        )
+        updated_influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
+            branch_energies,
+            resolved_influence_grid,
+            coherence_weights=coherence_weights,
+        )
+        blended_influence_phase_matrix = tuple(
+            tuple(
+                (1.0 - influence_relaxation) * current + influence_relaxation * updated
+                for current, updated in zip(current_row, updated_row)
+            )
+            for current_row, updated_row in zip(influence_phase_matrix, updated_influence_phase_matrix)
+        )
+        influence_residual = max(
+            abs(updated - current)
+            for current_row, updated_row in zip(influence_phase_matrix, blended_influence_phase_matrix)
+            for current, updated in zip(current_row, updated_row)
+        )
+        influence_phase_matrix = blended_influence_phase_matrix
+        coherence_matrix_current = _compute_coherence_matrix_with_influence(influence_phase_matrix)
+        if influence_residual <= influence_tolerance:
+            influence_converged = True
+            break
+    density_matrix = np.array(coherence_matrix_current, dtype=complex) / float(n_total)
     generated_lindblad_rates: tuple[float, ...] = tuple()
     detailed_balance_deviation = 0.0
     lamb_shift_hamiltonian, renormalized_transition_energies = _generate_lamb_shift_hamiltonian()
@@ -5619,6 +5670,9 @@ def compute_decoherence_model(
         bath_dressing_norm=bath_dressing_norm,
         influence_phase_matrix=influence_phase_matrix,
         non_gaussian_cumulant_norm=non_gaussian_cumulant_norm,
+        influence_iterations=influence_steps_taken,
+        influence_residual=influence_residual,
+        influence_converged=influence_converged,
         lindblad_trace=float(np.trace(density_matrix).real),
     )
 
