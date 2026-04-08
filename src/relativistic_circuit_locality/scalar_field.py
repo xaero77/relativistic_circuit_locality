@@ -681,6 +681,8 @@ class DecoherenceResult:
     memory_kernel_norm: float
     generated_lindblad_rates: tuple[float, ...]
     detailed_balance_deviation: float
+    lamb_shift_matrix: tuple[tuple[complex, ...], ...]
+    renormalized_transition_energies: tuple[float, ...]
     lindblad_trace: float
 
 
@@ -5147,6 +5149,9 @@ def compute_decoherence_model(
     system_transition_energies: tuple[float, ...] | None = None,
     detailed_balance_temperature: float | None = None,
     dephasing_rate_scale: float = 0.0,
+    auto_lamb_shift_from_bath: bool = False,
+    lamb_shift_strength: float = 1.0,
+    lamb_shift_cutoff: float | None = None,
     memory_kernel: Callable[[float], float] | None = None,
     memory_times: tuple[float, ...] | None = None,
     memory_strength: float = 0.0,
@@ -5248,6 +5253,12 @@ def compute_decoherence_model(
             )
         return derivative
 
+    def _hamiltonian_rhs(
+        density_matrix: np.ndarray,
+        hamiltonian: np.ndarray,
+    ) -> np.ndarray:
+        return -1j * (hamiltonian @ density_matrix - density_matrix @ hamiltonian)
+
     def _resolve_branch_energies() -> tuple[float, ...]:
         if system_transition_energies is not None:
             if len(system_transition_energies) != n_total:
@@ -5315,6 +5326,40 @@ def compute_decoherence_model(
                 rates.append(dephasing_rate_scale * environment_coupling * spectral_value * (2.0 * thermal_factor + 1.0))
         return tuple(operators), tuple(rates), detailed_balance_deviation
 
+    def _generate_lamb_shift_hamiltonian() -> tuple[np.ndarray, tuple[float, ...]]:
+        if not auto_lamb_shift_from_bath:
+            return np.zeros((n_total, n_total), dtype=complex), _resolve_branch_energies()
+        energies = _resolve_branch_energies()
+        reference_energy = min(energies)
+        cutoff = lamb_shift_cutoff
+        if cutoff is None:
+            cutoff = max(max(energies) - reference_energy, field_mass, 1.0) + 1.0
+        if cutoff <= 0.0:
+            cutoff = 1.0
+        shifted_energies: list[float] = []
+        for energy in energies:
+            gap = max(energy - reference_energy, 0.0)
+            integration_limit = max(cutoff, gap + 1e-6)
+            samples = 64
+            dw = integration_limit / float(samples)
+            shift = 0.0
+            for step in range(samples):
+                omega = (step + 0.5) * dw
+                spectral_value = (
+                    max(float(bath_spectral_density(omega)), 0.0)
+                    if bath_spectral_density is not None
+                    else 1.0
+                )
+                denominator = gap - omega
+                if abs(denominator) < 1e-6:
+                    continue
+                shift += spectral_value / denominator
+            shifted_energies.append(energy + lamb_shift_strength * environment_coupling * shift * dw)
+        hamiltonian = np.zeros((n_total, n_total), dtype=complex)
+        for index, shifted_energy in enumerate(shifted_energies):
+            hamiltonian[index, index] = shifted_energy
+        return hamiltonian, tuple(shifted_energies)
+
     def _memory_rhs(
         current_time: float,
         history_times: tuple[float, ...],
@@ -5372,10 +5417,11 @@ def compute_decoherence_model(
     density_matrix = np.array(coherence, dtype=complex) / float(n_total)
     generated_lindblad_rates: tuple[float, ...] = tuple()
     detailed_balance_deviation = 0.0
+    lamb_shift_hamiltonian, renormalized_transition_energies = _generate_lamb_shift_hamiltonian()
 
     operator_matrices: tuple[np.ndarray, ...] = tuple()
     resolved_rates: tuple[float, ...] = tuple()
-    if lindblad_operators is not None or auto_lindblad_from_bath:
+    if lindblad_operators is not None or auto_lindblad_from_bath or auto_lamb_shift_from_bath:
         if lindblad_steps <= 0:
             raise ValueError("lindblad_steps must be positive.")
         if lindblad_operators is not None:
@@ -5397,25 +5443,42 @@ def compute_decoherence_model(
         if lindblad_time != 0.0:
             dt = lindblad_time / float(lindblad_steps)
             operators_tuple = tuple(operator_matrices)
+            initial_rhs = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
+            if auto_lamb_shift_from_bath:
+                initial_rhs = initial_rhs + _hamiltonian_rhs(density_matrix, lamb_shift_hamiltonian)
             history_times_list = [0.0]
-            history_derivatives_list = [_lindblad_rhs(density_matrix, operators_tuple, resolved_rates)]
+            history_derivatives_list = [initial_rhs]
             for _ in range(lindblad_steps):
                 current_time = history_times_list[-1]
                 memory1 = _memory_rhs(current_time, tuple(history_times_list), tuple(history_derivatives_list))
                 k1 = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates) + memory1
+                if auto_lamb_shift_from_bath:
+                    k1 = k1 + _hamiltonian_rhs(density_matrix, lamb_shift_hamiltonian)
                 memory2 = _memory_rhs(current_time + 0.5 * dt, tuple(history_times_list), tuple(history_derivatives_list))
-                k2 = _lindblad_rhs(density_matrix + 0.5 * dt * k1, operators_tuple, resolved_rates) + memory2
-                k3 = _lindblad_rhs(density_matrix + 0.5 * dt * k2, operators_tuple, resolved_rates) + memory2
+                k2_state = density_matrix + 0.5 * dt * k1
+                k2 = _lindblad_rhs(k2_state, operators_tuple, resolved_rates) + memory2
+                if auto_lamb_shift_from_bath:
+                    k2 = k2 + _hamiltonian_rhs(k2_state, lamb_shift_hamiltonian)
+                k3_state = density_matrix + 0.5 * dt * k2
+                k3 = _lindblad_rhs(k3_state, operators_tuple, resolved_rates) + memory2
+                if auto_lamb_shift_from_bath:
+                    k3 = k3 + _hamiltonian_rhs(k3_state, lamb_shift_hamiltonian)
                 memory4 = _memory_rhs(current_time + dt, tuple(history_times_list), tuple(history_derivatives_list))
-                k4 = _lindblad_rhs(density_matrix + dt * k3, operators_tuple, resolved_rates) + memory4
+                k4_state = density_matrix + dt * k3
+                k4 = _lindblad_rhs(k4_state, operators_tuple, resolved_rates) + memory4
+                if auto_lamb_shift_from_bath:
+                    k4 = k4 + _hamiltonian_rhs(k4_state, lamb_shift_hamiltonian)
                 density_matrix = density_matrix + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
                 density_matrix = 0.5 * (density_matrix + density_matrix.conj().T)
                 trace_value = np.trace(density_matrix)
                 if abs(trace_value) > 1e-12:
                     density_matrix = density_matrix / trace_value
                 history_times_list.append(current_time + dt)
+                next_rhs = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
+                if auto_lamb_shift_from_bath:
+                    next_rhs = next_rhs + _hamiltonian_rhs(density_matrix, lamb_shift_hamiltonian)
                 history_derivatives_list.append(
-                    _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
+                    next_rhs
                 )
 
     coherence_matrix = tuple(
@@ -5440,6 +5503,11 @@ def compute_decoherence_model(
         memory_kernel_norm=memory_kernel_norm,
         generated_lindblad_rates=generated_lindblad_rates,
         detailed_balance_deviation=detailed_balance_deviation,
+        lamb_shift_matrix=tuple(
+            tuple(complex(value) for value in row)
+            for row in lamb_shift_hamiltonian
+        ),
+        renormalized_transition_energies=renormalized_transition_energies,
         lindblad_trace=float(np.trace(density_matrix).real),
     )
 

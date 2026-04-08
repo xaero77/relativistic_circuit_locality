@@ -1281,6 +1281,8 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.memory_kernel_norm, 0.0)
         self.assertEqual(result.generated_lindblad_rates, tuple())
         self.assertEqual(result.detailed_balance_deviation, 0.0)
+        self.assertEqual(len(result.renormalized_transition_energies), 1)
+        self.assertEqual(result.lamb_shift_matrix, ((0.0 + 0.0j,),))
         self.assertAlmostEqual(result.lindblad_trace, 1.0)
 
     def test_decoherence_model_thermal_environment_suppresses_off_diagonal(self) -> None:
@@ -1400,6 +1402,40 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertLess(result.detailed_balance_deviation, 1e-10)
         self.assertAlmostEqual(result.lindblad_trace, 1.0, places=8)
         self.assertLess(result.purity, 1.0)
+
+    def test_decoherence_model_auto_lamb_shift_renormalizes_energies(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        bare = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            system_transition_energies=(0.0, 1.2),
+            lindblad_time=1.0,
+            lindblad_steps=64,
+        )
+        shifted = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            environment_temperature=0.7,
+            bath_spectral_density=lambda omega: 1.0 / (1.0 + omega),
+            system_transition_energies=(0.0, 1.2),
+            auto_lamb_shift_from_bath=True,
+            lamb_shift_strength=0.2,
+            lamb_shift_cutoff=3.0,
+            lindblad_time=1.0,
+            lindblad_steps=64,
+        )
+        self.assertNotAlmostEqual(
+            shifted.renormalized_transition_energies[1],
+            bare.renormalized_transition_energies[1],
+        )
+        self.assertNotEqual(shifted.lamb_shift_matrix[1][1], 0.0 + 0.0j)
+        self.assertAlmostEqual(shifted.lindblad_trace, 1.0, places=8)
 
     def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
         a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
