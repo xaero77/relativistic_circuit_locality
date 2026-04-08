@@ -683,6 +683,8 @@ class DecoherenceResult:
     detailed_balance_deviation: float
     lamb_shift_matrix: tuple[tuple[complex, ...], ...]
     renormalized_transition_energies: tuple[float, ...]
+    bath_dressing_matrix: tuple[tuple[complex, ...], ...]
+    bath_dressing_norm: float
     lindblad_trace: float
 
 
@@ -5152,6 +5154,8 @@ def compute_decoherence_model(
     auto_lamb_shift_from_bath: bool = False,
     lamb_shift_strength: float = 1.0,
     lamb_shift_cutoff: float | None = None,
+    auto_bath_dressing_from_bath: bool = False,
+    bath_dressing_strength: float = 1.0,
     memory_kernel: Callable[[float], float] | None = None,
     memory_times: tuple[float, ...] | None = None,
     memory_strength: float = 0.0,
@@ -5360,6 +5364,32 @@ def compute_decoherence_model(
             hamiltonian[index, index] = shifted_energy
         return hamiltonian, tuple(shifted_energies)
 
+    def _generate_bath_dressing_matrix(
+        energies: tuple[float, ...],
+        reference_density: np.ndarray,
+    ) -> np.ndarray:
+        if not auto_bath_dressing_from_bath:
+            return np.zeros((n_total, n_total), dtype=complex)
+        dressing = np.zeros((n_total, n_total), dtype=complex)
+        reference_scale = max(field_mass, 1.0)
+        for i in range(n_total):
+            for j in range(i + 1, n_total):
+                gap = abs(energies[i] - energies[j])
+                spectral_value = (
+                    max(float(bath_spectral_density(gap)), 0.0)
+                    if bath_spectral_density is not None
+                    else 1.0
+                )
+                overlap = abs(reference_density[i, j])
+                if gap <= 1e-12:
+                    principal_value = spectral_value / reference_scale
+                else:
+                    principal_value = spectral_value / max(gap + reference_scale, 1e-12)
+                dressing_value = bath_dressing_strength * environment_coupling * overlap * principal_value
+                dressing[i, j] = dressing_value
+                dressing[j, i] = dressing_value
+        return dressing
+
     def _memory_rhs(
         current_time: float,
         history_times: tuple[float, ...],
@@ -5417,11 +5447,14 @@ def compute_decoherence_model(
     density_matrix = np.array(coherence, dtype=complex) / float(n_total)
     generated_lindblad_rates: tuple[float, ...] = tuple()
     detailed_balance_deviation = 0.0
+    branch_energies = _resolve_branch_energies()
     lamb_shift_hamiltonian, renormalized_transition_energies = _generate_lamb_shift_hamiltonian()
+    bath_dressing_matrix = _generate_bath_dressing_matrix(branch_energies, density_matrix)
+    bath_dressing_norm = float(np.linalg.norm(bath_dressing_matrix))
 
     operator_matrices: tuple[np.ndarray, ...] = tuple()
     resolved_rates: tuple[float, ...] = tuple()
-    if lindblad_operators is not None or auto_lindblad_from_bath or auto_lamb_shift_from_bath:
+    if lindblad_operators is not None or auto_lindblad_from_bath or auto_lamb_shift_from_bath or auto_bath_dressing_from_bath:
         if lindblad_steps <= 0:
             raise ValueError("lindblad_steps must be positive.")
         if lindblad_operators is not None:
@@ -5446,6 +5479,8 @@ def compute_decoherence_model(
             initial_rhs = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
             if auto_lamb_shift_from_bath:
                 initial_rhs = initial_rhs + _hamiltonian_rhs(density_matrix, lamb_shift_hamiltonian)
+            if auto_bath_dressing_from_bath:
+                initial_rhs = initial_rhs + _hamiltonian_rhs(density_matrix, bath_dressing_matrix)
             history_times_list = [0.0]
             history_derivatives_list = [initial_rhs]
             for _ in range(lindblad_steps):
@@ -5454,20 +5489,28 @@ def compute_decoherence_model(
                 k1 = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates) + memory1
                 if auto_lamb_shift_from_bath:
                     k1 = k1 + _hamiltonian_rhs(density_matrix, lamb_shift_hamiltonian)
+                if auto_bath_dressing_from_bath:
+                    k1 = k1 + _hamiltonian_rhs(density_matrix, bath_dressing_matrix)
                 memory2 = _memory_rhs(current_time + 0.5 * dt, tuple(history_times_list), tuple(history_derivatives_list))
                 k2_state = density_matrix + 0.5 * dt * k1
                 k2 = _lindblad_rhs(k2_state, operators_tuple, resolved_rates) + memory2
                 if auto_lamb_shift_from_bath:
                     k2 = k2 + _hamiltonian_rhs(k2_state, lamb_shift_hamiltonian)
+                if auto_bath_dressing_from_bath:
+                    k2 = k2 + _hamiltonian_rhs(k2_state, bath_dressing_matrix)
                 k3_state = density_matrix + 0.5 * dt * k2
                 k3 = _lindblad_rhs(k3_state, operators_tuple, resolved_rates) + memory2
                 if auto_lamb_shift_from_bath:
                     k3 = k3 + _hamiltonian_rhs(k3_state, lamb_shift_hamiltonian)
+                if auto_bath_dressing_from_bath:
+                    k3 = k3 + _hamiltonian_rhs(k3_state, bath_dressing_matrix)
                 memory4 = _memory_rhs(current_time + dt, tuple(history_times_list), tuple(history_derivatives_list))
                 k4_state = density_matrix + dt * k3
                 k4 = _lindblad_rhs(k4_state, operators_tuple, resolved_rates) + memory4
                 if auto_lamb_shift_from_bath:
                     k4 = k4 + _hamiltonian_rhs(k4_state, lamb_shift_hamiltonian)
+                if auto_bath_dressing_from_bath:
+                    k4 = k4 + _hamiltonian_rhs(k4_state, bath_dressing_matrix)
                 density_matrix = density_matrix + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
                 density_matrix = 0.5 * (density_matrix + density_matrix.conj().T)
                 trace_value = np.trace(density_matrix)
@@ -5477,6 +5520,8 @@ def compute_decoherence_model(
                 next_rhs = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
                 if auto_lamb_shift_from_bath:
                     next_rhs = next_rhs + _hamiltonian_rhs(density_matrix, lamb_shift_hamiltonian)
+                if auto_bath_dressing_from_bath:
+                    next_rhs = next_rhs + _hamiltonian_rhs(density_matrix, bath_dressing_matrix)
                 history_derivatives_list.append(
                     next_rhs
                 )
@@ -5508,6 +5553,11 @@ def compute_decoherence_model(
             for row in lamb_shift_hamiltonian
         ),
         renormalized_transition_energies=renormalized_transition_energies,
+        bath_dressing_matrix=tuple(
+            tuple(complex(value) for value in row)
+            for row in bath_dressing_matrix
+        ),
+        bath_dressing_norm=bath_dressing_norm,
         lindblad_trace=float(np.trace(density_matrix).real),
     )
 
