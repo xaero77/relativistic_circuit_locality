@@ -1,7 +1,7 @@
 """스칼라장 궤적 및 위상 도우미에 대한 회귀 테스트."""
 
 import unittest
-from math import asinh, pi
+from math import asinh, exp, pi
 
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
@@ -1277,6 +1277,8 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertLessEqual(result.purity, 1.0)
         self.assertEqual(len(result.decoherence_rates), 1)
         self.assertEqual(result.thermal_occupations, (0.0, 0.0))
+        self.assertEqual(result.spectral_weights, (1.0, 1.0))
+        self.assertEqual(result.memory_kernel_norm, 0.0)
         self.assertAlmostEqual(result.lindblad_trace, 1.0)
 
     def test_decoherence_model_thermal_environment_suppresses_off_diagonal(self) -> None:
@@ -1293,6 +1295,21 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(thermal.thermal_occupations[0], 0.0)
         self.assertLess(abs(thermal.coherence_matrix[0][1]), abs(vacuum.coherence_matrix[0][1]))
         self.assertLess(thermal.purity, vacuum.purity)
+
+    def test_decoherence_model_bath_spectral_density_reweights_modes(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.2, 0.0, 0.0), (1.5, 0.0, 0.0)),
+            field_mass=0.5,
+            environment_temperature=0.9,
+            bath_spectral_density=lambda omega: 1.0 / (1.0 + omega * omega),
+        )
+        self.assertGreater(result.spectral_weights[0], result.spectral_weights[1])
+        self.assertGreater(result.thermal_occupations[0], result.thermal_occupations[1])
 
     def test_decoherence_model_lindblad_evolution_preserves_trace(self) -> None:
         source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
@@ -1316,6 +1333,49 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertAlmostEqual(result.lindblad_trace, 1.0, places=8)
         self.assertGreater(result.coherence_matrix[0][0].real, result.coherence_matrix[1][1].real)
         self.assertLess(abs(result.coherence_matrix[0][1]), 0.5)
+
+    def test_decoherence_model_non_markovian_memory_changes_evolution(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        markov = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            lindblad_operators=(
+                (
+                    (0.0 + 0.0j, 1.0 + 0.0j),
+                    (0.0 + 0.0j, 0.0 + 0.0j),
+                ),
+            ),
+            lindblad_rates=(0.3,),
+            lindblad_time=1.0,
+            lindblad_steps=64,
+        )
+        non_markov = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            lindblad_operators=(
+                (
+                    (0.0 + 0.0j, 1.0 + 0.0j),
+                    (0.0 + 0.0j, 0.0 + 0.0j),
+                ),
+            ),
+            lindblad_rates=(0.3,),
+            lindblad_time=1.0,
+            lindblad_steps=64,
+            memory_kernel=lambda tau: exp(-2.0 * tau),
+            memory_strength=0.4,
+            colored_noise_correlation=lambda tau: exp(-tau),
+            noise_time_window=1.0,
+            noise_steps=32,
+        )
+        self.assertGreater(non_markov.memory_kernel_norm, 0.0)
+        self.assertAlmostEqual(non_markov.lindblad_trace, 1.0, places=8)
+        self.assertNotAlmostEqual(non_markov.purity, markov.purity)
 
     def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
         a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])

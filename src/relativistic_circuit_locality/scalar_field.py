@@ -677,6 +677,8 @@ class DecoherenceResult:
     decoherence_rates: tuple[float, ...]
     purity: float
     thermal_occupations: tuple[float, ...]
+    spectral_weights: tuple[float, ...]
+    memory_kernel_norm: float
     lindblad_trace: float
 
 
@@ -5134,28 +5136,94 @@ def compute_decoherence_model(
     environment_coupling: float = 0.01,
     environment_temperature: float | None = None,
     thermal_occupations: tuple[float, ...] | None = None,
+    bath_spectral_density: Callable[[float], float] | None = None,
     lindblad_operators: tuple[tuple[tuple[complex, ...], ...], ...] | None = None,
     lindblad_rates: tuple[float, ...] | None = None,
     lindblad_time: float = 0.0,
     lindblad_steps: int = 64,
+    memory_kernel: Callable[[float], float] | None = None,
+    memory_times: tuple[float, ...] | None = None,
+    memory_strength: float = 0.0,
+    colored_noise_correlation: Callable[[float], float] | None = None,
+    noise_time_window: float | None = None,
+    noise_steps: int = 64,
 ) -> DecoherenceResult:
-    """field mode partial trace 와 thermal/Lindblad 환경을 포함한 decoherence 를 계산한다."""
-    def _resolve_thermal_occupations() -> tuple[float, ...]:
+    """field mode partial trace 와 thermal/Lindblad/non-Markov bath 를 포함한 decoherence 를 계산한다."""
+    def _resolve_spectral_weights() -> tuple[float, ...]:
+        if bath_spectral_density is None:
+            return tuple(1.0 for _ in momenta)
+        weights: list[float] = []
+        for momentum in momenta:
+            omega = sqrt(_dot(momentum, momentum) + field_mass * field_mass)
+            weights.append(max(float(bath_spectral_density(omega)), 0.0))
+        total_weight = sum(weights)
+        if total_weight <= 0.0:
+            return tuple(1.0 for _ in momenta)
+        normalization = len(weights) / total_weight
+        return tuple(weight * normalization for weight in weights)
+
+    def _resolve_thermal_occupations(
+        spectral_weights: tuple[float, ...],
+    ) -> tuple[float, ...]:
         if thermal_occupations is not None:
             if len(thermal_occupations) != len(momenta):
                 raise ValueError("thermal_occupations must match the number of momenta.")
-            return tuple(max(float(occupation), 0.0) for occupation in thermal_occupations)
+            return tuple(
+                max(float(occupation), 0.0) * spectral_weight
+                for occupation, spectral_weight in zip(thermal_occupations, spectral_weights)
+            )
         if environment_temperature is None or environment_temperature <= 0.0:
             return tuple(0.0 for _ in momenta)
         occupations: list[float] = []
-        for momentum in momenta:
+        for momentum, spectral_weight in zip(momenta, spectral_weights):
             omega = sqrt(_dot(momentum, momentum) + field_mass * field_mass)
             beta_omega = omega / environment_temperature
             if beta_omega > 700.0:
                 occupations.append(0.0)
             else:
-                occupations.append(1.0 / max(exp(beta_omega) - 1.0, 1e-12))
+                occupations.append((1.0 / max(exp(beta_omega) - 1.0, 1e-12)) * spectral_weight)
         return tuple(occupations)
+
+    def _compute_colored_noise_norm() -> float:
+        if colored_noise_correlation is None:
+            return 0.0
+        if noise_steps <= 0:
+            raise ValueError("noise_steps must be positive.")
+        window = noise_time_window
+        if window is None:
+            window = lindblad_time if lindblad_time > 0.0 else 1.0
+        if window <= 0.0:
+            return 0.0
+        dt_noise = window / float(noise_steps)
+        integral = 0.0
+        for step in range(noise_steps + 1):
+            tau = step * dt_noise
+            weight = 0.5 if step in (0, noise_steps) else 1.0
+            integral += weight * max(float(colored_noise_correlation(tau)), 0.0)
+        return integral * dt_noise
+
+    def _resolve_memory_times() -> tuple[float, ...]:
+        if memory_kernel is None:
+            return tuple()
+        if memory_times is not None:
+            if len(memory_times) < 2:
+                raise ValueError("memory_times must contain at least two points.")
+            if any(right <= left for left, right in zip(memory_times, memory_times[1:])):
+                raise ValueError("memory_times must be strictly increasing.")
+            return memory_times
+        window = lindblad_time if lindblad_time > 0.0 else 1.0
+        steps = max(lindblad_steps, 1)
+        return tuple(window * step / float(steps) for step in range(steps + 1))
+
+    def _compute_memory_kernel_norm(resolved_memory_times: tuple[float, ...]) -> float:
+        if memory_kernel is None or not resolved_memory_times:
+            return 0.0
+        integral = 0.0
+        for left, right in zip(resolved_memory_times, resolved_memory_times[1:]):
+            kernel_left = abs(float(memory_kernel(left)))
+            kernel_right = abs(float(memory_kernel(right)))
+            integral += 0.5 * (kernel_left + kernel_right) * (right - left)
+        return integral
 
     def _lindblad_rhs(
         density_matrix: np.ndarray,
@@ -5174,6 +5242,23 @@ def compute_decoherence_model(
             )
         return derivative
 
+    def _memory_rhs(
+        current_time: float,
+        history_times: tuple[float, ...],
+        history_derivatives: tuple[np.ndarray, ...],
+    ) -> np.ndarray:
+        if memory_kernel is None or memory_strength == 0.0 or len(history_times) < 2:
+            return np.zeros_like(density_matrix, dtype=complex)
+        derivative = np.zeros_like(history_derivatives[0], dtype=complex)
+        for index in range(len(history_derivatives)):
+            if index == 0:
+                interval = history_times[1] - history_times[0]
+            else:
+                interval = history_times[index] - history_times[index - 1]
+            tau = max(current_time - history_times[index], 0.0)
+            derivative += interval * float(memory_kernel(tau)) * history_derivatives[index]
+        return memory_strength * derivative
+
     pair_displacements = compute_branch_pair_displacements(
         branches_a, branches_b, momenta,
         field_mass=field_mass,
@@ -5183,7 +5268,11 @@ def compute_decoherence_model(
     n_a = len(branches_a)
     n_b = len(branches_b)
     n_total = n_a * n_b
-    resolved_thermal_occupations = _resolve_thermal_occupations()
+    spectral_weights = _resolve_spectral_weights()
+    resolved_thermal_occupations = _resolve_thermal_occupations(spectral_weights)
+    colored_noise_norm = _compute_colored_noise_norm()
+    resolved_memory_times = _resolve_memory_times()
+    memory_kernel_norm = _compute_memory_kernel_norm(resolved_memory_times)
     # coherence matrix: ρ((r,s),(r',s')) = <field_{rs}|field_{r's'}>
     coherence: list[list[complex]] = []
     for r in range(n_a):
@@ -5197,7 +5286,13 @@ def compute_decoherence_model(
                         abs(a - b) ** 2 * (2.0 * occupation + 1.0)
                         for a, b, occupation in zip(alpha_rs, alpha_rps, resolved_thermal_occupations)
                     )
-                    suppression = exp(-0.5 * thermal_diff_sq * (1.0 + environment_coupling))
+                    suppression_strength = (
+                        1.0
+                        + environment_coupling
+                        + colored_noise_norm
+                        + memory_strength * memory_kernel_norm
+                    )
+                    suppression = exp(-0.5 * thermal_diff_sq * suppression_strength)
                     phase = compute_displacement_operator_phase(alpha_rs, alpha_rps)
                     row.append(suppression * complex_exp(1j * phase))
             coherence.append(row)
@@ -5220,16 +5315,26 @@ def compute_decoherence_model(
         if lindblad_time != 0.0:
             dt = lindblad_time / float(lindblad_steps)
             operators_tuple = tuple(operator_matrices)
+            history_times_list = [0.0]
+            history_derivatives_list = [_lindblad_rhs(density_matrix, operators_tuple, resolved_rates)]
             for _ in range(lindblad_steps):
-                k1 = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
-                k2 = _lindblad_rhs(density_matrix + 0.5 * dt * k1, operators_tuple, resolved_rates)
-                k3 = _lindblad_rhs(density_matrix + 0.5 * dt * k2, operators_tuple, resolved_rates)
-                k4 = _lindblad_rhs(density_matrix + dt * k3, operators_tuple, resolved_rates)
+                current_time = history_times_list[-1]
+                memory1 = _memory_rhs(current_time, tuple(history_times_list), tuple(history_derivatives_list))
+                k1 = _lindblad_rhs(density_matrix, operators_tuple, resolved_rates) + memory1
+                memory2 = _memory_rhs(current_time + 0.5 * dt, tuple(history_times_list), tuple(history_derivatives_list))
+                k2 = _lindblad_rhs(density_matrix + 0.5 * dt * k1, operators_tuple, resolved_rates) + memory2
+                k3 = _lindblad_rhs(density_matrix + 0.5 * dt * k2, operators_tuple, resolved_rates) + memory2
+                memory4 = _memory_rhs(current_time + dt, tuple(history_times_list), tuple(history_derivatives_list))
+                k4 = _lindblad_rhs(density_matrix + dt * k3, operators_tuple, resolved_rates) + memory4
                 density_matrix = density_matrix + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
                 density_matrix = 0.5 * (density_matrix + density_matrix.conj().T)
                 trace_value = np.trace(density_matrix)
                 if abs(trace_value) > 1e-12:
                     density_matrix = density_matrix / trace_value
+                history_times_list.append(current_time + dt)
+                history_derivatives_list.append(
+                    _lindblad_rhs(density_matrix, operators_tuple, resolved_rates)
+                )
 
     coherence_matrix = tuple(
         tuple(complex(value) for value in row)
@@ -5249,6 +5354,8 @@ def compute_decoherence_model(
         decoherence_rates=tuple(decoherence_rates),
         purity=purity,
         thermal_occupations=resolved_thermal_occupations,
+        spectral_weights=spectral_weights,
+        memory_kernel_norm=memory_kernel_norm,
         lindblad_trace=float(np.trace(density_matrix).real),
     )
 
