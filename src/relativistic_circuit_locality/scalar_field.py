@@ -710,6 +710,10 @@ class FiniteDifferencePdeResult:
     spatial_dimension: int
     effective_time_step: float
     substeps_per_interval: tuple[int, ...]
+    stencil_order: int
+    refinement_rounds: int
+    boundary_geometry: str
+    active_point_mask: tuple[bool, ...]
 
 
 @dataclass(frozen=True)
@@ -5391,6 +5395,80 @@ def _source_density_at_point(source: BranchPath, sample_time: float, position: V
     return source.charge * exp(-0.5 * src_distance * src_distance)
 
 
+def _refine_axis_near_source(
+    axis: tuple[float, ...],
+    source_coords: tuple[float, ...],
+    *,
+    rounds: int,
+    radius_factor: float,
+) -> tuple[float, ...]:
+    refined = tuple(axis)
+    for _ in range(rounds):
+        if len(refined) < 2:
+            return refined
+        spacing = min(refined[i + 1] - refined[i] for i in range(len(refined) - 1))
+        radius = radius_factor * spacing
+        should_refine = any(
+            any(abs(0.5 * (left + right) - coord) <= radius for coord in source_coords)
+            for left, right in zip(refined, refined[1:])
+        )
+        if not should_refine:
+            continue
+        new_values: list[float] = [refined[0]]
+        for left, right in zip(refined, refined[1:]):
+            new_values.append(0.5 * (left + right))
+            new_values.append(right)
+        refined = tuple(sorted(set(new_values)))
+    return refined
+
+
+def _adaptive_refine_spatial_points(
+    source: BranchPath,
+    spatial_points: tuple[Vector3, ...],
+    *,
+    rounds: int,
+    radius_factor: float,
+) -> tuple[Vector3, ...]:
+    if rounds <= 0:
+        return spatial_points
+    cartesian = _cartesian_grid_metadata(spatial_points)
+    source_x = tuple(point.position[0] for point in source.points)
+    source_y = tuple(point.position[1] for point in source.points)
+    source_z = tuple(point.position[2] for point in source.points)
+    if cartesian is not None:
+        xs, ys, zs, _ = cartesian
+        refined_x = _refine_axis_near_source(xs, source_x, rounds=rounds, radius_factor=radius_factor)
+        refined_y = _refine_axis_near_source(ys, source_y, rounds=rounds, radius_factor=radius_factor)
+        refined_z = _refine_axis_near_source(zs, source_z, rounds=rounds, radius_factor=radius_factor)
+        return tuple(
+            (x, y, z)
+            for z in refined_z
+            for y in refined_y
+            for x in refined_x
+        )
+    refined_points = tuple(spatial_points)
+    for _ in range(rounds):
+        new_points: list[Vector3] = [refined_points[0]]
+        min_spacing = min(_norm(_sub(refined_points[i + 1], refined_points[i])) for i in range(len(refined_points) - 1))
+        radius = radius_factor * min_spacing
+        for left, right in zip(refined_points, refined_points[1:]):
+            midpoint = _scale(_add(left, right), 0.5)
+            if any(_norm(_sub(midpoint, point.position)) <= radius for point in source.points):
+                new_points.append(midpoint)
+            new_points.append(right)
+        refined_points = tuple(new_points)
+    return refined_points
+
+
+def _evaluate_boundary_level_set(
+    point: Vector3,
+    boundary_level_set: Callable[[Vector3], float] | None,
+) -> float:
+    if boundary_level_set is None:
+        return -1.0
+    return float(boundary_level_set(point))
+
+
 def _finite_difference_boundary_value(
     phi_curr: list[float],
     current_index: tuple[int, int, int],
@@ -5413,6 +5491,49 @@ def _finite_difference_boundary_value(
     return phi_curr[current_index[0] + dims[0] * (current_index[1] + dims[1] * current_index[2])]
 
 
+def _laplacian_1d(
+    phi_curr: list[float],
+    j: int,
+    *,
+    dx: float,
+    boundary: Literal["absorbing", "reflecting", "periodic"],
+    stencil_order: int,
+) -> float:
+    n_space = len(phi_curr)
+    if stencil_order >= 4 and n_space >= 5:
+        def sample(index: int) -> float:
+            if 0 <= index < n_space:
+                return phi_curr[index]
+            if boundary == "periodic":
+                return phi_curr[index % n_space]
+            if boundary == "reflecting":
+                mirrored = index
+                while mirrored < 0 or mirrored >= n_space:
+                    if mirrored < 0:
+                        mirrored = -mirrored
+                    if mirrored >= n_space:
+                        mirrored = 2 * (n_space - 1) - mirrored
+                return phi_curr[mirrored]
+            clamped = min(max(index, 0), n_space - 1)
+            return phi_curr[clamped]
+        return (
+            -sample(j + 2) + 16.0 * sample(j + 1) - 30.0 * sample(j) + 16.0 * sample(j - 1) - sample(j - 2)
+        ) / (12.0 * dx * dx)
+    if j == 0:
+        if boundary == "periodic":
+            return (phi_curr[1] - 2.0 * phi_curr[0] + phi_curr[n_space - 1]) / (dx * dx)
+        if boundary == "reflecting":
+            return (phi_curr[1] - phi_curr[0]) / (dx * dx)
+        return (phi_curr[1] - 2.0 * phi_curr[0]) / (dx * dx)
+    if j == n_space - 1:
+        if boundary == "periodic":
+            return (phi_curr[0] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
+        if boundary == "reflecting":
+            return (phi_curr[j - 1] - phi_curr[j]) / (dx * dx)
+        return (phi_curr[j - 1] - 2.0 * phi_curr[j]) / (dx * dx)
+    return (phi_curr[j + 1] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
+
+
 def _required_substeps(interval_dt: float, courant_scale: float, max_courant: float) -> int:
     if interval_dt <= 0.0:
         raise ValueError("time_slices must be strictly increasing.")
@@ -5431,16 +5552,34 @@ def solve_finite_difference_kg(
     light_speed: float = 1.0,
     boundary: Literal["absorbing", "reflecting", "periodic"] = "absorbing",
     max_courant: float = 0.9,
+    stencil_order: Literal[2, 4] = 2,
+    adaptive_mesh_refinement_rounds: int = 0,
+    adaptive_mesh_radius_factor: float = 1.25,
+    boundary_level_set: Callable[[Vector3], float] | None = None,
 ) -> FiniteDifferencePdeResult:
     """유한차분 leapfrog 방법으로 Klein-Gordon 방정식을 직접 적분한다.
 
-    tensor-product Cartesian 격자가 주어지면 3D 7-point Laplacian을 사용하고,
+    tensor-product Cartesian 격자가 주어지면 3D Laplacian을 사용하고,
+    필요하면 source support 주변 adaptive refinement, 4차 stencil, level-set 곡면 경계를 적용한다.
     그렇지 않으면 입력 순서를 따라 1D surrogate로 푼다.
     """
     if len(time_slices) < 2:
         raise ValueError("At least 2 time slices are required.")
     if len(spatial_points) < 2:
         raise ValueError("At least 2 spatial points are required.")
+    if stencil_order not in {2, 4}:
+        raise ValueError("stencil_order must be 2 or 4.")
+    if adaptive_mesh_refinement_rounds < 0:
+        raise ValueError("adaptive_mesh_refinement_rounds must be non-negative.")
+    if adaptive_mesh_radius_factor <= 0.0:
+        raise ValueError("adaptive_mesh_radius_factor must be positive.")
+
+    spatial_points = _adaptive_refine_spatial_points(
+        source,
+        spatial_points,
+        rounds=adaptive_mesh_refinement_rounds,
+        radius_factor=adaptive_mesh_radius_factor,
+    )
 
     dt_values = [time_slices[i + 1] - time_slices[i] for i in range(len(time_slices) - 1)]
     dt = min(dt_values) if dt_values else 1.0
@@ -5455,11 +5594,13 @@ def solve_finite_difference_kg(
         dx = min(dx_values) if dx_values else 1.0
         courant = light_speed * dt / max(dx, 1e-12)
         courant_scale = light_speed / max(dx, 1e-12)
+        active_mask = tuple(_evaluate_boundary_level_set(point, boundary_level_set) <= 0.0 for point in spatial_points)
         phi_prev = [0.0] * n_space
         phi_curr = [0.0] * n_space
         for j in range(n_space):
-            distance = _norm(_sub(spatial_points[j], source.position_at(time_slices[0])))
-            phi_curr[j] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
+            if active_mask[j]:
+                distance = _norm(_sub(spatial_points[j], source.position_at(time_slices[0])))
+                phi_curr[j] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
 
         all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
         substeps_per_interval: list[int] = []
@@ -5475,22 +5616,16 @@ def solve_finite_difference_kg(
                 sample_time = interval_start + (substep + 1) * sub_dt
                 phi_next = [0.0] * n_space
                 for j in range(n_space):
-                    if j == 0:
-                        if boundary == "periodic":
-                            laplacian = (phi_curr[1] - 2.0 * phi_curr[0] + phi_curr[n_space - 1]) / (dx * dx)
-                        elif boundary == "reflecting":
-                            laplacian = (phi_curr[1] - phi_curr[0]) / (dx * dx)
-                        else:
-                            laplacian = (phi_curr[1] - 2.0 * phi_curr[0]) / (dx * dx)
-                    elif j == n_space - 1:
-                        if boundary == "periodic":
-                            laplacian = (phi_curr[0] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
-                        elif boundary == "reflecting":
-                            laplacian = (phi_curr[j - 1] - phi_curr[j]) / (dx * dx)
-                        else:
-                            laplacian = (phi_curr[j - 1] - 2.0 * phi_curr[j]) / (dx * dx)
-                    else:
-                        laplacian = (phi_curr[j + 1] - 2.0 * phi_curr[j] + phi_curr[j - 1]) / (dx * dx)
+                    if not active_mask[j]:
+                        phi_next[j] = 0.0
+                        continue
+                    laplacian = _laplacian_1d(
+                        phi_curr,
+                        j,
+                        dx=dx,
+                        boundary=boundary,
+                        stencil_order=stencil_order,
+                    )
                     source_density = _source_density_at_point(source, sample_time, spatial_points[j])
                     phi_next[j] = (
                         2.0 * phi_curr[j]
@@ -5501,6 +5636,9 @@ def solve_finite_difference_kg(
                 if boundary == "absorbing" and n_space >= 2:
                     phi_next[0] = phi_curr[0] + light_speed * sub_dt * (phi_curr[1] - phi_curr[0]) / dx
                     phi_next[-1] = phi_curr[-1] - light_speed * sub_dt * (phi_curr[-1] - phi_curr[-2]) / dx
+                for j, is_active in enumerate(active_mask):
+                    if not is_active:
+                        phi_next[j] = 0.0
 
                 phi_prev = list(phi_curr)
                 phi_curr = phi_next
@@ -5514,6 +5652,10 @@ def solve_finite_difference_kg(
             spatial_dimension=1,
             effective_time_step=effective_dt_min if effective_dt_min < inf else dt,
             substeps_per_interval=tuple(substeps_per_interval),
+            stencil_order=stencil_order,
+            refinement_rounds=adaptive_mesh_refinement_rounds,
+            boundary_geometry="level_set" if boundary_level_set is not None else "none",
+            active_point_mask=active_mask,
         )
 
     xs, ys, zs, mapping = cartesian
@@ -5527,13 +5669,15 @@ def solve_finite_difference_kg(
     courant_scale = light_speed * sqrt(sum((1.0 / (spacing * spacing)) for spacing in active_spacings))
     dims = (len(xs), len(ys), len(zs))
     spatial_dimension = sum(1 for size in dims if size > 1)
+    active_mask = tuple(_evaluate_boundary_level_set(point, boundary_level_set) <= 0.0 for point in spatial_points)
 
     phi_prev = [0.0] * n_space
     phi_curr = [0.0] * n_space
     for key, flat_index in mapping.items():
         point = spatial_points[flat_index]
-        distance = _norm(_sub(point, source.position_at(time_slices[0])))
-        phi_curr[flat_index] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
+        if active_mask[flat_index]:
+            distance = _norm(_sub(point, source.position_at(time_slices[0])))
+            phi_curr[flat_index] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
 
     all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
     axis_spacings = (dx, dy, dz)
@@ -5550,34 +5694,72 @@ def solve_finite_difference_kg(
             sample_time = interval_start + (substep + 1) * sub_dt
             phi_next = [0.0] * n_space
             for (ix, iy, iz), flat_index in mapping.items():
+                if not active_mask[flat_index]:
+                    phi_next[flat_index] = 0.0
+                    continue
                 laplacian = 0.0
                 for axis, spacing in enumerate(axis_spacings):
                     if spacing is None:
                         continue
                     current_index = (ix, iy, iz)
-                    minus_index = [ix, iy, iz]
-                    plus_index = [ix, iy, iz]
-                    minus_index[axis] -= 1
-                    plus_index[axis] += 1
-                    minus_value = _finite_difference_boundary_value(
-                        phi_curr,
-                        current_index,
-                        (minus_index[0], minus_index[1], minus_index[2]),
-                        axis=axis,
-                        direction=-1,
-                        dims=dims,
-                        boundary=boundary,
-                    )
-                    plus_value = _finite_difference_boundary_value(
-                        phi_curr,
-                        current_index,
-                        (plus_index[0], plus_index[1], plus_index[2]),
-                        axis=axis,
-                        direction=1,
-                        dims=dims,
-                        boundary=boundary,
-                    )
-                    laplacian += (plus_value - 2.0 * phi_curr[flat_index] + minus_value) / (spacing * spacing)
+                    if stencil_order >= 4 and dims[axis] >= 5:
+                        stencil_sum = 0.0
+                        for offset, coefficient in ((-2, -1.0), (-1, 16.0), (0, -30.0), (1, 16.0), (2, -1.0)):
+                            if offset == 0:
+                                value = phi_curr[flat_index]
+                            else:
+                                neighbor = [ix, iy, iz]
+                                neighbor[axis] += offset
+                                neighbor_tuple = (neighbor[0], neighbor[1], neighbor[2])
+                                if neighbor_tuple in mapping:
+                                    neighbor_flat = mapping[neighbor_tuple]
+                                    value = phi_curr[neighbor_flat] if active_mask[neighbor_flat] else 0.0
+                                else:
+                                    value = _finite_difference_boundary_value(
+                                        phi_curr,
+                                        current_index,
+                                        neighbor_tuple,
+                                        axis=axis,
+                                        direction=1 if offset > 0 else -1,
+                                        dims=dims,
+                                        boundary=boundary,
+                                    )
+                            stencil_sum += coefficient * value
+                        laplacian += stencil_sum / (12.0 * spacing * spacing)
+                    else:
+                        minus_index = [ix, iy, iz]
+                        plus_index = [ix, iy, iz]
+                        minus_index[axis] -= 1
+                        plus_index[axis] += 1
+                        minus_tuple = (minus_index[0], minus_index[1], minus_index[2])
+                        plus_tuple = (plus_index[0], plus_index[1], plus_index[2])
+                        if minus_tuple in mapping:
+                            minus_flat = mapping[minus_tuple]
+                            minus_value = phi_curr[minus_flat] if active_mask[minus_flat] else 0.0
+                        else:
+                            minus_value = _finite_difference_boundary_value(
+                                phi_curr,
+                                current_index,
+                                minus_tuple,
+                                axis=axis,
+                                direction=-1,
+                                dims=dims,
+                                boundary=boundary,
+                            )
+                        if plus_tuple in mapping:
+                            plus_flat = mapping[plus_tuple]
+                            plus_value = phi_curr[plus_flat] if active_mask[plus_flat] else 0.0
+                        else:
+                            plus_value = _finite_difference_boundary_value(
+                                phi_curr,
+                                current_index,
+                                plus_tuple,
+                                axis=axis,
+                                direction=1,
+                                dims=dims,
+                                boundary=boundary,
+                            )
+                        laplacian += (plus_value - 2.0 * phi_curr[flat_index] + minus_value) / (spacing * spacing)
                 source_density = _source_density_at_point(source, sample_time, spatial_points[flat_index])
                 phi_next[flat_index] = (
                     2.0 * phi_curr[flat_index]
@@ -5587,6 +5769,9 @@ def solve_finite_difference_kg(
 
             if boundary == "absorbing":
                 for (ix, iy, iz), flat_index in mapping.items():
+                    if not active_mask[flat_index]:
+                        phi_next[flat_index] = 0.0
+                        continue
                     correction = 0.0
                     correction_count = 0
                     for axis, spacing in enumerate(axis_spacings):
@@ -5605,6 +5790,9 @@ def solve_finite_difference_kg(
                         correction_count += 1
                     if correction_count > 0:
                         phi_next[flat_index] = correction / correction_count
+            for flat_index, is_active in enumerate(active_mask):
+                if not is_active:
+                    phi_next[flat_index] = 0.0
 
             phi_prev = list(phi_curr)
             phi_curr = phi_next
@@ -5619,6 +5807,10 @@ def solve_finite_difference_kg(
         spatial_dimension=spatial_dimension,
         effective_time_step=effective_dt_min if effective_dt_min < inf else dt,
         substeps_per_interval=tuple(substeps_per_interval),
+        stencil_order=stencil_order,
+        refinement_rounds=adaptive_mesh_refinement_rounds,
+        boundary_geometry="level_set" if boundary_level_set is not None else "none",
+        active_point_mask=active_mask,
     )
 
 

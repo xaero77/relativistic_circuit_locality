@@ -36,6 +36,7 @@
 - tensor mediator 에 대해 `faddeev_popov`/`brst` ghost 보정과 self-consistent `rainbow`/`ladder`/`coupled` Dyson-Schwinger dressing 지원
 - von Neumann entropy, negativity, entanglement witness, visibility 진단, mode occupation distribution
 - 1+1D leapfrog finite-difference Klein-Gordon solver (absorbing/reflecting/periodic 경계), 물리적 lattice time stepper with radiation damping
+- finite-difference KG solver 에 source-driven adaptive mesh refinement, 4th-order stencil, level-set callable 기반 곡면 경계 지원
 - Lebedev spherical quadrature (6/14/26-point), Gauss-Legendre order 10 확장, Bessel J1 asymptotic expansion, numpy FFT, retarded time bisection fallback, 3D backreaction gradient
 - C² 연속 cubic spline worldline 보간 (`SplineBranchPath`), spline 곡선을 세분된 piecewise linear 궤적으로 변환하는 `refined_branch_path`
 - parametric approximation 을 넘어서는 mode-by-mode Fock-space Hamiltonian 진화 (Magnus expansion 2차항 time-ordering correction 포함)
@@ -66,6 +67,7 @@
 - ghost/Dyson-Schwinger surrogate: `compute_tensor_mediated_phase_matrix`의 `ghost_mode`, `ghost_strength`, `dyson_schwinger_mode`, `dyson_schwinger_strength`, `dyson_schwinger_iterations`, `dyson_schwinger_tolerance`, `dyson_schwinger_relaxation`, 그리고 결과의 `ghost_sector`, `dyson_schwinger`
 - 얽힘 진단: `EntanglementMeasures`, `compute_entanglement_measures`, `ModeOccupationDistribution`, `compute_mode_occupation_distribution`
 - PDE/격자: `FiniteDifferencePdeResult`, `solve_finite_difference_kg`, `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics`
+- finite-difference 확장 파라미터: `solve_finite_difference_kg`의 `stencil_order`, `adaptive_mesh_refinement_rounds`, `adaptive_mesh_radius_factor`, `boundary_level_set`
 - Lebedev quadrature: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`
 - cubic spline worldline: `SplineBranchPath`, `compute_spline_branch_phase_matrix`
 - Fock-space 진화: `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution`

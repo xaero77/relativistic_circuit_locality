@@ -1404,6 +1404,51 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertEqual(len(result.field_values), 3)
 
+    def test_finite_difference_kg_adaptive_mesh_refinement_increases_grid_points(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.5, 1.0),
+            spatial_points=((-2.0, 0.0, 0.0), (0.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            adaptive_mesh_refinement_rounds=1,
+        )
+        self.assertGreater(len(result.spatial_points), 3)
+        self.assertEqual(result.refinement_rounds, 1)
+
+    def test_finite_difference_kg_fourth_order_stencil_reports_metadata(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.5, 1.0),
+            spatial_points=((-2.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            stencil_order=4,
+        )
+        self.assertEqual(result.stencil_order, 4)
+        self.assertEqual(len(result.field_values[0]), 5)
+
+    def test_finite_difference_kg_level_set_boundary_masks_outside_points(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        points = tuple(
+            (x, y, z)
+            for z in (0.0,)
+            for y in (-1.0, 0.0, 1.0)
+            for x in (-1.0, 0.0, 1.0)
+        )
+        result = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 0.25, 0.5),
+            spatial_points=points,
+            mass=0.5,
+            boundary_level_set=lambda p: p[0] * p[0] + p[1] * p[1] - 0.6 * 0.6,
+        )
+        self.assertEqual(result.boundary_geometry, "level_set")
+        self.assertLess(sum(result.active_point_mask), len(points))
+        for active, value in zip(result.active_point_mask, result.field_values[-1]):
+            if not active:
+                self.assertAlmostEqual(value, 0.0)
+
     def test_physical_lattice_dynamics_leapfrog(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
         result = solve_physical_lattice_dynamics(

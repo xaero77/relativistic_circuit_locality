@@ -170,6 +170,7 @@
 - lattice 보간: `InterpolatedFieldResult`, `interpolate_field_lattice`
 - running coupling: `RunningCouplingResult`, `compute_running_coupling_phase_matrix`
 - bookkeeping 검증: `BookkeepingValidationResult`, `validate_symbolic_bookkeeping`
+- finite-difference 확장: `solve_finite_difference_kg`의 `stencil_order`, `adaptive_mesh_refinement_rounds`, `adaptive_mesh_radius_factor`, `boundary_level_set`
 
 ## 전파 모드 요약
 
@@ -195,7 +196,7 @@
 
 - ~~microcausality 판정이 자명~~ → `evaluate_microcausality_commutator`가 branch segment 쌍에 대해 Pauli-Jordan commutator 를 Gauss-Legendre 이중 적분으로 평가한다. massive Klein-Gordon tail `-m J1(mτ)/(4πτ)`와 수치적으로 regularized 한 light-cone shell 을 함께 반영하므로, 단순 0/1 판정 대신 spacelike support 에서는 0, timelike/null support 에서는 비영 commutator norm 을 반환한다.
 - ~~텐서 구조 근사 수준~~ → `compute_tensor_mediated_phase_matrix`가 branch 분리 방향에 대한 transverse/longitudinal projector 를 구성해 vector current-current contraction 을 평가하고, gravity 채널에는 같은 projector 위의 traceless spatial stress contraction 을 추가한다. `gauge_scheme={"projected","landau","feynman","coulomb","unitary"}` 와 `gauge_parameter`로 separation-dependent nonlocal longitudinal weight 를 갖는 gauge-fixed surrogate propagator 를 선택할 수 있고, `vertex_resummation={"none","geometric","pade","exponential"}` 및 `vertex_strength`로 국소 phase density 기반 4D vertex resummation surrogate 를 적용한다. 추가로 `ghost_mode={"none","faddeev_popov","brst"}` 와 `ghost_strength`가 Landau gauge slice 로 수렴하는 ghost phase 와 BRST-compensated vector phase 를 계산하고, `dyson_schwinger_mode={"none","rainbow","ladder","coupled"}` 및 관련 반복 파라미터가 self-energy kernel 기반의 self-consistent tensor dressing 을 반복해 dressed vector/gravity channel 을 반환한다. 따라서 단순 `1 ± v_a·v_b/c²` 평균 보정이 아니라, 평행/수직 운동 방향, gauge fixing, ghost cancellation, BRST residual, infinite-order surrogate self-dressing 을 함께 반영한다. 완전한 연속 함수공간 BRST cohomology 와 자외선 재규격화까지 포함한 exact Dyson-Schwinger functional solution 은 아직 연구형 과제로 남는다.
-- ~~유한차분 PDE solver~~ → `solve_finite_difference_kg`가 tensor-product `spatial_points`를 자동 인식해 Cartesian 3D 7-point Laplacian leapfrog 진화를 수행하고, coarse `time_slices` 사이에서는 Courant 수에 맞춰 adaptive substepping 을 적용한다. `FiniteDifferencePdeResult`에 `grid_shape`, `spatial_dimension`, `effective_time_step`, `substeps_per_interval` 메타데이터도 추가해 1D slice 와 3D 격자, 내부 안정화 step 을 같은 API로 추적할 수 있다. 다만 adaptive mesh refinement, 고차 stencil, 완전한 임의 곡면 경계는 아직 지원하지 않는다.
+- ~~유한차분 PDE solver~~ → `solve_finite_difference_kg`가 tensor-product `spatial_points`를 자동 인식해 Cartesian 3D leapfrog 진화를 수행하고, coarse `time_slices` 사이에서는 Courant 수에 맞춰 adaptive substepping 을 적용한다. 여기에 `adaptive_mesh_refinement_rounds`와 `adaptive_mesh_radius_factor`로 source worldline 주변 구간을 midpoint 기반으로 세분화하는 adaptive mesh refinement 를 적용하고, `stencil_order=4`에서 1D 5-point 및 다차원 축별 4차 정확도 Laplacian 을 선택할 수 있으며, `boundary_level_set` callable 로 level-set 형태의 임의 곡면 경계를 잘라내어 active/inactive grid 를 구분한다. `FiniteDifferencePdeResult`는 `grid_shape`, `spatial_dimension`, `effective_time_step`, `substeps_per_interval`뿐 아니라 `stencil_order`, `refinement_rounds`, `boundary_geometry`, `active_point_mask`도 반환해 내부 격자 구조를 추적한다. 완전한 anisotropic metric-adaptive remeshing 과 cut-cell flux 보존 경계 적분은 아직 남아 있다.
 - **decoherence 모델 단순화**: `compute_decoherence_model`은 coherent-state overlap 기반으로 환경 결합을 포함하지만, 열적 환경이나 일반적 Lindblad 방정식을 풀지 않는다.
 
 ### 수치 알고리즘 한계

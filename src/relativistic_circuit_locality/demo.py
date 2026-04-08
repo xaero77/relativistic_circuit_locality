@@ -338,9 +338,16 @@ def main() -> None:
         spatial_points=((-2.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
         mass=0.5,
         boundary="absorbing",
+        stencil_order=4,
+        adaptive_mesh_refinement_rounds=1,
+        boundary_level_set=lambda p: p[0] * p[0] - 2.25,
     )
     print("fd_pde_courant =", round(fd_pde.courant_number, 4))
     print("fd_pde_slices =", len(fd_pde.field_values))
+    print("fd_pde_stencil_order =", fd_pde.stencil_order)
+    print("fd_pde_refinement_rounds =", fd_pde.refinement_rounds)
+    print("fd_pde_boundary_geometry =", fd_pde.boundary_geometry)
+    print("fd_pde_active_points =", sum(fd_pde.active_point_mask))
     phys_lattice = solve_physical_lattice_dynamics(
         branches_a[0],
         time_slices=(0.0, 1.0, 2.0, 3.0, 4.0),
