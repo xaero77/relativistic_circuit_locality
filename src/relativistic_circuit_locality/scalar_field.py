@@ -82,6 +82,7 @@ _LEBEDEV_WEIGHTS_26: tuple[float, ...] = (
 _EXACT_LEBEDEV_ORDERS: tuple[int, ...] = tuple(sorted((6, 14, 26) + tuple(LEBEDEV_SPHERICAL_TABLES)))
 _SUPPORTED_LEBEDEV_ORDERS: tuple[int, ...] = _EXACT_LEBEDEV_ORDERS
 _TABULATED_LEBEDEV_ORDERS: tuple[int, ...] = _EXACT_LEBEDEV_ORDERS
+_SUPPORTED_LEBEDEV_ORDER_MESSAGE = ", ".join(str(order) for order in _SUPPORTED_LEBEDEV_ORDERS)
 
 
 @dataclass(frozen=True)
@@ -4483,21 +4484,6 @@ def _unit_vector(vector: Vector3, *, tolerance: float = 1e-12) -> Vector3:
     return _scale(vector, 1.0 / magnitude)
 
 
-def _fibonacci_sphere_directions(count: int) -> tuple[Vector3, ...]:
-    if count <= 0:
-        raise ValueError("count must be positive.")
-    if count == 1:
-        return ((0.0, 0.0, 1.0),)
-    golden_angle = pi * (3.0 - sqrt(5.0))
-    directions: list[Vector3] = []
-    for index in range(count):
-        z = 1.0 - (2.0 * index + 1.0) / float(count)
-        radial = sqrt(max(1.0 - z * z, 0.0))
-        azimuth = golden_angle * index
-        directions.append((radial * np.cos(azimuth), radial * np.sin(azimuth), z))
-    return tuple(directions)
-
-
 def _neville_extrapolate_complex(
     samples: tuple[complex, ...],
     parameters: tuple[float, ...],
@@ -4559,11 +4545,7 @@ def _resolve_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float,
         return _AXIS_DIRECTIONS + _EDGE_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_26
     if order in LEBEDEV_SPHERICAL_TABLES:
         return _load_tabulated_lebedev_rule(order)
-    if order > 26:
-        directions = _fibonacci_sphere_directions(order)
-        weights = tuple(1.0 / float(order) for _ in range(order))
-        return directions, weights
-    raise ValueError("lebedev_order must be an exact supported order or any integer greater than 26.")
+    raise ValueError(f"lebedev_order must be one of the exact supported Lebedev orders: {_SUPPORTED_LEBEDEV_ORDER_MESSAGE}.")
 
 
 def _transverse_projector(
@@ -6874,8 +6856,8 @@ def compute_lebedev_displacement_amplitudes(
 ) -> LebedevQuadratureResult:
     """구면 quadrature 가중치로 연속 운동량 적분의 각도 평균을 계산한다.
 
-    ``6/14/26/38/50/74/86/110/146/170/194``는 exact tabulated Lebedev rule 을 사용하고,
-    그 외의 더 큰 direction count 는 같은 개수의 결정론적 quasi-uniform spherical rule 로 확장한다.
+    지원 차수는 canonical exact Lebedev rule 로 한정한다.
+    지원되지 않는 임의 direction count 는 surrogate spherical rule 로 대체하지 않고 명시적으로 거부한다.
     """
     if momentum_cutoff <= 0.0:
         raise ValueError("momentum_cutoff must be positive.")
@@ -6911,17 +6893,8 @@ def compute_lebedev_displacement_amplitudes(
         return tuple(amplitudes_local)
 
     amplitudes = _compute_amplitudes_for_rule(directions, weights)
-    if lebedev_order in _TABULATED_LEBEDEV_ORDERS:
-        lower_orders = tuple(order for order in _TABULATED_LEBEDEV_ORDERS if order < lebedev_order)
-        reference_order = lower_orders[-1] if lower_orders else None
-    elif lebedev_order > 26:
-        lower_exact_orders = tuple(order for order in _TABULATED_LEBEDEV_ORDERS if order < lebedev_order)
-        if lower_exact_orders:
-            reference_order = lower_exact_orders[-1]
-        else:
-            reference_order = max(26, lebedev_order // 2)
-    else:
-        reference_order = None
+    lower_orders = tuple(order for order in _TABULATED_LEBEDEV_ORDERS if order < lebedev_order)
+    reference_order = lower_orders[-1] if lower_orders else None
     if reference_order is not None:
         reference_directions, reference_weights = _resolve_lebedev_rule(reference_order)
         reference_amplitudes = _compute_amplitudes_for_rule(reference_directions, reference_weights)
@@ -6956,8 +6929,8 @@ def compute_extrapolated_lebedev_displacement_amplitudes(
     """
     if len(lebedev_orders) < 2:
         raise ValueError("lebedev_orders must contain at least two supported orders.")
-    if any(order not in _TABULATED_LEBEDEV_ORDERS and order <= 26 for order in lebedev_orders):
-        raise ValueError("lebedev_orders must use 6, 14, 26, or integers greater than 26.")
+    if any(order not in _TABULATED_LEBEDEV_ORDERS for order in lebedev_orders):
+        raise ValueError(f"lebedev_orders must be chosen from the exact supported Lebedev orders: {_SUPPORTED_LEBEDEV_ORDER_MESSAGE}.")
     if any(left >= right for left, right in zip(lebedev_orders, lebedev_orders[1:])):
         raise ValueError("lebedev_orders must be strictly increasing.")
 

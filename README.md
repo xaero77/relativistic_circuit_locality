@@ -37,7 +37,7 @@
 - von Neumann entropy, negativity, entanglement witness, visibility 진단, mode occupation distribution
 - 1+1D leapfrog finite-difference Klein-Gordon solver (absorbing/reflecting/periodic 경계), 물리적 lattice time stepper with radiation damping
 - finite-difference KG solver 에 source-driven adaptive mesh refinement, 4th-order stencil, level-set callable 기반 곡면 경계 지원
-- Lebedev spherical quadrature (6/14/26-point), Gauss-Legendre order 10 확장, Bessel J1 asymptotic expansion, numpy FFT, retarded time bisection fallback, 3D backreaction gradient
+- exact Lebedev spherical quadrature (`6/14/26/38/50/74/86/110/146/170/194`), Gauss-Legendre order 10 확장, Bessel J1 asymptotic expansion, numpy FFT, retarded time bisection fallback, 3D backreaction gradient
 - C² 연속 cubic spline worldline 보간 (`SplineBranchPath`), spline 곡선을 세분된 piecewise linear 궤적으로 변환하는 `refined_branch_path`
 - parametric approximation 을 넘어서는 mode-by-mode Fock-space Hamiltonian 진화 (Magnus expansion 2차항 time-ordering correction 포함)
 - 오차 기반 적응형 세분화 quadrature (`compute_adaptive_phase_integral`), Neville 알고리즘 기반 Richardson extrapolation (`compute_richardson_extrapolated_phase`)
