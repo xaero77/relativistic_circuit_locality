@@ -2,6 +2,7 @@
 
 import unittest
 from math import asinh, exp, pi
+import relativistic_circuit_locality.scalar_field as scalar_field
 
 from relativistic_circuit_locality.scalar_field import (
     BranchPath,
@@ -1129,13 +1130,19 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(r110.direction_count, r50.direction_count)
         self.assertGreaterEqual(r194.angular_error_estimate[0], 0.0)
 
+    def test_tabulated_high_order_lebedev_rule_integrates_degree_10_polynomial(self) -> None:
+        directions, weights = scalar_field._resolve_lebedev_rule(50)
+        self.assertAlmostEqual(sum(weights), 1.0, places=12)
+        x10_average = sum(weight * (direction[0] ** 10) for direction, weight in zip(directions, weights))
+        self.assertAlmostEqual(x10_average, 1.0 / 11.0, places=12)
+
     def test_lebedev_supports_arbitrary_higher_direction_count(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
         result = compute_lebedev_displacement_amplitudes(
             (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=42,
         )
         self.assertEqual(result.direction_count, 42)
-        self.assertEqual(result.reference_order, 26)
+        self.assertEqual(result.reference_order, 38)
         self.assertGreaterEqual(result.angular_error_estimate[0], 0.0)
 
     def test_extrapolated_lebedev_returns_multi_order_summary(self) -> None:

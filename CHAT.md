@@ -126,7 +126,7 @@
 - coherent-state displacement 로부터 mode 별 occupation 과 확률 분포를 계산하는 `ModeOccupationDistribution`, `compute_mode_occupation_distribution` 추가
 - 흡수/반사/주기 경계조건을 지원하는 1+1D leapfrog finite-difference Klein-Gordon solver `FiniteDifferencePdeResult`, `solve_finite_difference_kg` 추가
 - leapfrog/symplectic integrator 와 radiation damping 을 지원하는 물리적 격자 time stepper `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics` 추가
-- 6/14/26-point Lebedev spherical quadrature 와 고차 quasi-uniform spherical refinement 를 써서 angular 적분 정밀도를 높이는 `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes` 추가
+- 6/14/26-point와 exact high-order `38/50/74/86/110/146/170/194` Lebedev spherical quadrature, 그리고 그 밖의 차수에 대한 quasi-uniform spherical refinement 를 써서 angular 적분 정밀도를 높이는 `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes` 추가
 - Gauss-Legendre quadrature 를 order 10 까지 확장하여 worldline 적분 정밀도 개선
 - Bessel J1 함수에 |x| > 10 에서의 asymptotic expansion 분기 추가
 - `solve_spectral_lattice`에서 수동 O(N²) DFT 를 numpy FFT 로 교체하여 성능 개선
@@ -202,7 +202,7 @@
 
 ### 수치 알고리즘 한계
 
-- **Lebedev quadrature 제한 (대부분 해소, canonical exact 고차 table 전체 내장은 아님)**: `compute_lebedev_displacement_amplitudes`가 tabulated `6/14/26`-point Lebedev rule 을 유지하면서, 그보다 큰 임의의 `lebedev_order`에 대해 같은 direction count 의 결정론적 quasi-uniform spherical rule 을 바로 생성한다. 고차 rule 에서는 직전의 절반 수준 direction count 와 비교한 `angular_error_estimate` 및 `reference_order`를 함께 반환해 angular refinement 진단도 가능하다. 추가로 `compute_extrapolated_lebedev_displacement_amplitudes`가 여러 direction count 결과를 모아 `1 / N_dir` 변수에 대한 Neville 외삽으로 무한 방향수 극한 추정치와 보수적 `estimated_error`를 제공하므로, 더 이상 `50/110/194` 같은 고정 차수 집합에 묶이지 않는다. 다만 canonical high-order Lebedev table 자체를 전부 tabulate 한 것은 아니므로, 엄밀한 다항 정확도 증명이 필요한 경우에는 향후 exact rule 데이터 확장이 여전히 유효하다.
+- **Lebedev quadrature 제한 (추가 축소, 최고차 전체 내장은 아님)**: `compute_lebedev_displacement_amplitudes`가 기존 `6/14/26`뿐 아니라 exact high-order `38/50/74/86/110/146/170/194` Lebedev table 을 코드에 직접 내장하고, `theta/phi/weight` 원본 데이터를 좌표계 `(x,y,z,w)`로 변환해 정확한 spherical rule 을 사용한다. 따라서 이 차수들에서는 더 이상 quasi-uniform surrogate 가 아니라 알려진 algebraic precision 을 가진 canonical Lebedev rule 을 그대로 적용한다. exact rule 이 있는 차수에서는 가장 가까운 더 낮은 exact order 와의 차이를 `angular_error_estimate`와 `reference_order`로 돌려주고, `compute_extrapolated_lebedev_displacement_amplitudes`는 이 exact high-order sweep 을 `1 / N_dir` 변수의 Neville 외삽으로 묶어 무한 방향수 극한 추정치와 보수적 `estimated_error`를 제공한다. exact table 이 아직 없는 더 높은 차수에서는 기존처럼 quasi-uniform spherical fallback 이 남아 있으므로, `230` 이상까지 동일한 canonical precision 을 요구한다면 추가 tabulation 은 여전히 유효하다.
 - ~~유한차분 안정성~~ → `solve_finite_difference_kg`가 구간별 Courant 수를 계산해 필요한 만큼 leapfrog substep 수를 자동 선택할 뿐 아니라, `time_error_tolerance`가 주어지면 각 coarse interval 에 대해 `N` substep 적분과 `2N` substep 적분을 비교하는 local error estimate 를 계산해 허용오차 이하가 될 때까지, 또는 `max_time_substeps` 상한에 도달할 때까지 substep 수를 재적응시킨다. 결과의 `local_error_estimates`, `time_error_tolerance`, `effective_time_step`, `substeps_per_interval`로 안정성과 정확도 제어가 실제로 어떻게 선택되었는지 추적할 수 있다.
 
 ## 사용 방법

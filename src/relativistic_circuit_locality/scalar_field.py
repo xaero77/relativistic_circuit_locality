@@ -5,10 +5,12 @@ from __future__ import annotations
 from cmath import exp as complex_exp
 from functools import lru_cache
 from dataclasses import dataclass
-from math import ceil, exp, factorial, inf, pi, sinh, sqrt
+from math import ceil, cos, exp, factorial, inf, pi, radians, sin, sinh, sqrt
 from typing import Callable, Literal
 
 import numpy as np
+
+from .lebedev_tables import LEBEDEV_SPHERICAL_TABLES
 
 
 Vector3 = tuple[float, float, float]
@@ -77,8 +79,9 @@ _LEBEDEV_WEIGHTS_26: tuple[float, ...] = (
     + tuple(4.0 / 105.0 for _ in range(12))
     + tuple(27.0 / 840.0 for _ in range(8))
 )
-_SUPPORTED_LEBEDEV_ORDERS: tuple[int, ...] = (6, 14, 26, 50, 110, 194)
-_TABULATED_LEBEDEV_ORDERS: tuple[int, ...] = (6, 14, 26)
+_EXACT_LEBEDEV_ORDERS: tuple[int, ...] = tuple(sorted((6, 14, 26) + tuple(LEBEDEV_SPHERICAL_TABLES)))
+_SUPPORTED_LEBEDEV_ORDERS: tuple[int, ...] = _EXACT_LEBEDEV_ORDERS
+_TABULATED_LEBEDEV_ORDERS: tuple[int, ...] = _EXACT_LEBEDEV_ORDERS
 
 
 @dataclass(frozen=True)
@@ -4527,6 +4530,26 @@ def _neville_extrapolate_complex(
 
 
 @lru_cache(maxsize=None)
+def _load_tabulated_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float, ...]]:
+    raw_table = LEBEDEV_SPHERICAL_TABLES.get(order)
+    if raw_table is None:
+        raise ValueError(f"No tabulated Lebedev rule is available for order {order}.")
+    directions: list[Vector3] = []
+    weights: list[float] = []
+    for line in raw_table.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        theta_deg, phi_deg, weight = (float(value) for value in stripped.split())
+        theta = radians(theta_deg)
+        phi = radians(phi_deg)
+        sin_phi = sin(phi)
+        directions.append((cos(theta) * sin_phi, sin(theta) * sin_phi, cos(phi)))
+        weights.append(weight)
+    return tuple(directions), tuple(weights)
+
+
+@lru_cache(maxsize=None)
 def _resolve_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float, ...]]:
     if order == 6:
         return _AXIS_DIRECTIONS, _LEBEDEV_WEIGHTS_6
@@ -4534,11 +4557,13 @@ def _resolve_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float,
         return _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_14
     if order == 26:
         return _AXIS_DIRECTIONS + _EDGE_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_26
+    if order in LEBEDEV_SPHERICAL_TABLES:
+        return _load_tabulated_lebedev_rule(order)
     if order > 26:
         directions = _fibonacci_sphere_directions(order)
         weights = tuple(1.0 / float(order) for _ in range(order))
         return directions, weights
-    raise ValueError("lebedev_order must be 6, 14, 26, or any integer greater than 26.")
+    raise ValueError("lebedev_order must be an exact supported order or any integer greater than 26.")
 
 
 def _transverse_projector(
@@ -6849,8 +6874,8 @@ def compute_lebedev_displacement_amplitudes(
 ) -> LebedevQuadratureResult:
     """구면 quadrature 가중치로 연속 운동량 적분의 각도 평균을 계산한다.
 
-    ``6/14/26``은 tabulated Lebedev rule 을 사용하고,
-    그보다 큰 direction count 는 같은 개수의 결정론적 quasi-uniform spherical rule 로 확장한다.
+    ``6/14/26/38/50/74/86/110/146/170/194``는 exact tabulated Lebedev rule 을 사용하고,
+    그 외의 더 큰 direction count 는 같은 개수의 결정론적 quasi-uniform spherical rule 로 확장한다.
     """
     if momentum_cutoff <= 0.0:
         raise ValueError("momentum_cutoff must be positive.")
@@ -6886,11 +6911,17 @@ def compute_lebedev_displacement_amplitudes(
         return tuple(amplitudes_local)
 
     amplitudes = _compute_amplitudes_for_rule(directions, weights)
-    if lebedev_order > 26:
-        reference_order = max(26, lebedev_order // 2)
-    else:
+    if lebedev_order in _TABULATED_LEBEDEV_ORDERS:
         lower_orders = tuple(order for order in _TABULATED_LEBEDEV_ORDERS if order < lebedev_order)
         reference_order = lower_orders[-1] if lower_orders else None
+    elif lebedev_order > 26:
+        lower_exact_orders = tuple(order for order in _TABULATED_LEBEDEV_ORDERS if order < lebedev_order)
+        if lower_exact_orders:
+            reference_order = lower_exact_orders[-1]
+        else:
+            reference_order = max(26, lebedev_order // 2)
+    else:
+        reference_order = None
     if reference_order is not None:
         reference_directions, reference_weights = _resolve_lebedev_rule(reference_order)
         reference_amplitudes = _compute_amplitudes_for_rule(reference_directions, reference_weights)
