@@ -22,6 +22,7 @@ from relativistic_circuit_locality.scalar_field import (
     solve_finite_difference_kg,
     solve_physical_lattice_dynamics,
     compute_lebedev_displacement_amplitudes,
+    compute_extrapolated_lebedev_displacement_amplitudes,
     SplineBranchPath,
     compute_spline_branch_phase_matrix,
     compute_fock_space_evolution,
@@ -1128,12 +1129,26 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(r110.direction_count, r50.direction_count)
         self.assertGreaterEqual(r194.angular_error_estimate[0], 0.0)
 
-    def test_lebedev_invalid_higher_order_is_rejected(self) -> None:
+    def test_lebedev_supports_arbitrary_higher_direction_count(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
-        with self.assertRaises(ValueError):
-            compute_lebedev_displacement_amplitudes(
-                (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=42,
-            )
+        result = compute_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=42,
+        )
+        self.assertEqual(result.direction_count, 42)
+        self.assertEqual(result.reference_order, 26)
+        self.assertGreaterEqual(result.angular_error_estimate[0], 0.0)
+
+    def test_extrapolated_lebedev_returns_multi_order_summary(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (1.7, 0.0, 0.0)), (2.0, (1.7, 0.0, 0.0))])
+        result = compute_extrapolated_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=2.5, lebedev_orders=(26, 42, 84, 194),
+        )
+        self.assertEqual(result.orders_used, (26, 42, 84, 194))
+        self.assertEqual(len(result.raw_results), 4)
+        self.assertEqual(result.raw_results[-1].direction_count, 194)
+        self.assertEqual(result.amplitudes, result.raw_results[-1].amplitudes)
+        self.assertEqual(len(result.extrapolated_amplitudes), 1)
+        self.assertGreaterEqual(result.estimated_error[0], 0.0)
 
     # --- 물리적 충실도 확장 ---
 

@@ -78,6 +78,7 @@ _LEBEDEV_WEIGHTS_26: tuple[float, ...] = (
     + tuple(27.0 / 840.0 for _ in range(8))
 )
 _SUPPORTED_LEBEDEV_ORDERS: tuple[int, ...] = (6, 14, 26, 50, 110, 194)
+_TABULATED_LEBEDEV_ORDERS: tuple[int, ...] = (6, 14, 26)
 
 
 @dataclass(frozen=True)
@@ -757,6 +758,17 @@ class LebedevQuadratureResult:
     quadrature_order: int
     direction_count: int
     angular_error_estimate: tuple[float, ...]
+    reference_order: int | None = None
+
+
+@dataclass(frozen=True)
+class LebedevExtrapolationResult:
+    amplitudes: tuple[complex, ...]
+    extrapolated_amplitudes: tuple[complex, ...]
+    estimated_error: tuple[float, ...]
+    orders_used: tuple[int, ...]
+    per_order_amplitudes: tuple[tuple[complex, ...], ...]
+    raw_results: tuple[LebedevQuadratureResult, ...]
 
 
 WidthSpec = float | tuple[float, ...]
@@ -4483,6 +4495,37 @@ def _fibonacci_sphere_directions(count: int) -> tuple[Vector3, ...]:
     return tuple(directions)
 
 
+def _neville_extrapolate_complex(
+    samples: tuple[complex, ...],
+    parameters: tuple[float, ...],
+    *,
+    target: float,
+) -> complex:
+    """복소 표본에 대해 Neville 알고리즘으로 다항식 외삽을 수행한다."""
+    if len(samples) != len(parameters):
+        raise ValueError("samples and parameters must have the same length.")
+    if not samples:
+        raise ValueError("At least one sample is required for extrapolation.")
+    table = [list(samples)]
+    sample_count = len(samples)
+    for level in range(1, sample_count):
+        next_row: list[complex] = []
+        for start in range(sample_count - level):
+            left_parameter = parameters[start]
+            right_parameter = parameters[start + level]
+            numerator = (
+                (target - right_parameter) * table[level - 1][start]
+                + (left_parameter - target) * table[level - 1][start + 1]
+            )
+            denominator = left_parameter - right_parameter
+            if abs(denominator) <= 1e-30:
+                next_row.append(table[level - 1][start + 1])
+            else:
+                next_row.append(numerator / denominator)
+        table.append(next_row)
+    return table[-1][0]
+
+
 @lru_cache(maxsize=None)
 def _resolve_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float, ...]]:
     if order == 6:
@@ -4491,11 +4534,11 @@ def _resolve_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float,
         return _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_14
     if order == 26:
         return _AXIS_DIRECTIONS + _EDGE_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_26
-    if order in (50, 110, 194):
+    if order > 26:
         directions = _fibonacci_sphere_directions(order)
         weights = tuple(1.0 / float(order) for _ in range(order))
         return directions, weights
-    raise ValueError(f"lebedev_order must be one of {_SUPPORTED_LEBEDEV_ORDERS}.")
+    raise ValueError("lebedev_order must be 6, 14, 26, or any integer greater than 26.")
 
 
 def _transverse_projector(
@@ -6807,7 +6850,7 @@ def compute_lebedev_displacement_amplitudes(
     """구면 quadrature 가중치로 연속 운동량 적분의 각도 평균을 계산한다.
 
     ``6/14/26``은 tabulated Lebedev rule 을 사용하고,
-    ``50/110/194``는 같은 direction count 를 갖는 결정론적 quasi-uniform rule 을 사용한다.
+    그보다 큰 direction count 는 같은 개수의 결정론적 quasi-uniform spherical rule 로 확장한다.
     """
     if momentum_cutoff <= 0.0:
         raise ValueError("momentum_cutoff must be positive.")
@@ -6843,9 +6886,12 @@ def compute_lebedev_displacement_amplitudes(
         return tuple(amplitudes_local)
 
     amplitudes = _compute_amplitudes_for_rule(directions, weights)
-    lower_orders = tuple(order for order in _SUPPORTED_LEBEDEV_ORDERS if order < lebedev_order)
-    if lower_orders:
-        reference_order = lower_orders[-1]
+    if lebedev_order > 26:
+        reference_order = max(26, lebedev_order // 2)
+    else:
+        lower_orders = tuple(order for order in _TABULATED_LEBEDEV_ORDERS if order < lebedev_order)
+        reference_order = lower_orders[-1] if lower_orders else None
+    if reference_order is not None:
         reference_directions, reference_weights = _resolve_lebedev_rule(reference_order)
         reference_amplitudes = _compute_amplitudes_for_rule(reference_directions, reference_weights)
         angular_error_estimate = tuple(abs(current - reference) for current, reference in zip(amplitudes, reference_amplitudes))
@@ -6856,6 +6902,68 @@ def compute_lebedev_displacement_amplitudes(
         quadrature_order=lebedev_order,
         direction_count=len(directions),
         angular_error_estimate=angular_error_estimate,
+        reference_order=reference_order,
+    )
+
+
+def compute_extrapolated_lebedev_displacement_amplitudes(
+    branches: tuple[BranchPath, ...],
+    *,
+    field_mass: float,
+    momentum_cutoff: float,
+    radial_quadrature_order: int = 5,
+    source_width: float = 0.0,
+    time_quadrature_order: int = 3,
+    lebedev_orders: tuple[int, ...] = (26, 50, 110, 194),
+) -> LebedevExtrapolationResult:
+    """여러 Lebedev 방향 규칙을 비교해 angular 적분을 외삽한다.
+
+    ``1 / direction_count``를 오차 스케일 변수로 두고 Neville 외삽을 적용해
+    무한 방향수 극한을 추정한다. 반환되는 ``amplitudes``는 최고 차수 원시 결과,
+    ``extrapolated_amplitudes``는 외삽 추정치이며, ``estimated_error``는
+    마지막 refinement jump 와 외삽 보정량 중 더 보수적인 값을 사용한다.
+    """
+    if len(lebedev_orders) < 2:
+        raise ValueError("lebedev_orders must contain at least two supported orders.")
+    if any(order not in _TABULATED_LEBEDEV_ORDERS and order <= 26 for order in lebedev_orders):
+        raise ValueError("lebedev_orders must use 6, 14, 26, or integers greater than 26.")
+    if any(left >= right for left, right in zip(lebedev_orders, lebedev_orders[1:])):
+        raise ValueError("lebedev_orders must be strictly increasing.")
+
+    raw_results = tuple(
+        compute_lebedev_displacement_amplitudes(
+            branches,
+            field_mass=field_mass,
+            momentum_cutoff=momentum_cutoff,
+            radial_quadrature_order=radial_quadrature_order,
+            source_width=source_width,
+            time_quadrature_order=time_quadrature_order,
+            lebedev_order=order,
+        )
+        for order in lebedev_orders
+    )
+    per_order_amplitudes = tuple(result.amplitudes for result in raw_results)
+    parameters = tuple(1.0 / float(result.direction_count) for result in raw_results)
+
+    extrapolated_amplitudes: list[complex] = []
+    estimated_error: list[float] = []
+    highest_amplitudes = raw_results[-1].amplitudes
+    previous_amplitudes = raw_results[-2].amplitudes
+    for branch_index in range(len(branches)):
+        samples = tuple(per_order[branch_index] for per_order in per_order_amplitudes)
+        extrapolated = _neville_extrapolate_complex(samples, parameters, target=0.0)
+        last_jump = abs(highest_amplitudes[branch_index] - previous_amplitudes[branch_index])
+        extrapolation_shift = abs(extrapolated - highest_amplitudes[branch_index])
+        extrapolated_amplitudes.append(extrapolated)
+        estimated_error.append(max(last_jump, extrapolation_shift))
+
+    return LebedevExtrapolationResult(
+        amplitudes=highest_amplitudes,
+        extrapolated_amplitudes=tuple(extrapolated_amplitudes),
+        estimated_error=tuple(estimated_error),
+        orders_used=lebedev_orders,
+        per_order_amplitudes=per_order_amplitudes,
+        raw_results=raw_results,
     )
 
 

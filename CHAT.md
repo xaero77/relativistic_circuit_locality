@@ -126,7 +126,7 @@
 - coherent-state displacement 로부터 mode 별 occupation 과 확률 분포를 계산하는 `ModeOccupationDistribution`, `compute_mode_occupation_distribution` 추가
 - 흡수/반사/주기 경계조건을 지원하는 1+1D leapfrog finite-difference Klein-Gordon solver `FiniteDifferencePdeResult`, `solve_finite_difference_kg` 추가
 - leapfrog/symplectic integrator 와 radiation damping 을 지원하는 물리적 격자 time stepper `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics` 추가
-- 6/14/26-point Lebedev spherical quadrature 를 써서 angular 적분 정밀도를 높이는 `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes` 추가
+- 6/14/26-point Lebedev spherical quadrature 와 고차 quasi-uniform spherical refinement 를 써서 angular 적분 정밀도를 높이는 `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes` 추가
 - Gauss-Legendre quadrature 를 order 10 까지 확장하여 worldline 적분 정밀도 개선
 - Bessel J1 함수에 |x| > 10 에서의 asymptotic expansion 분기 추가
 - `solve_spectral_lattice`에서 수동 O(N²) DFT 를 numpy FFT 로 교체하여 성능 개선
@@ -137,6 +137,7 @@
 - parametric approximation 을 넘어서는 mode-by-mode Fock-space Hamiltonian 진화 `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution` 추가. Magnus expansion 1차항(parametric phase)과 2차항(time-ordering correction)을 분리 계산
 - 고정 차수 GL quadrature 대신 오차 기반 적응형 세분화로 위상을 계산하는 `AdaptivePhaseResult`, `compute_adaptive_phase_integral` 추가. 각 구간에서 coarse/fine 값을 비교하여 tolerance 미만이 될 때까지 재귀적으로 세분화
 - quadrature order 를 단계적으로 키워 Neville 알고리즘으로 다항식 외삽하는 `RichardsonExtrapolationResult`, `compute_richardson_extrapolated_phase` 추가. 체계적 오차를 제거한 최적 추정치와 오차 추정 제공
+- 여러 angular direction count 를 함께 비교해 `1 / N_dir` 극한으로 외삽하는 `LebedevExtrapolationResult`, `compute_extrapolated_lebedev_displacement_amplitudes` 추가
 - spline worldline, Fock-space 진화, adaptive quadrature, Richardson extrapolation 에 대한 회귀 테스트 추가
 - `compute_fock_space_evolution`에 `magnus_order=3` 지원 추가: 3차 Magnus 항(nested commutator `[H₁,[H₂,H₃]]` triple integral)으로 비섭동적 QFT 보정 확대
 - 격자점 사이에서 역거리 가중(IDW) 보간으로 연속 field 값을 제공하는 `InterpolatedFieldResult`, `interpolate_field_lattice` 추가
@@ -162,7 +163,7 @@
 - tensor ghost/Dyson-Schwinger surrogate: `compute_tensor_mediated_phase_matrix`의 `ghost_mode`, `ghost_strength`, `dyson_schwinger_mode`, `dyson_schwinger_strength`, `dyson_schwinger_iterations`, `dyson_schwinger_tolerance`, `dyson_schwinger_relaxation`, 그리고 결과의 `ghost_sector`, `dyson_schwinger`
 - 얽힘 진단 확장: `EntanglementMeasures`, `compute_entanglement_measures`, `ModeOccupationDistribution`, `compute_mode_occupation_distribution`
 - PDE/격자 개선: `FiniteDifferencePdeResult`, `solve_finite_difference_kg`, `PhysicalLatticeDynamicsResult`, `solve_physical_lattice_dynamics`
-- 수치 알고리즘 개선: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`
+- 수치 알고리즘 개선: `LebedevQuadratureResult`, `compute_lebedev_displacement_amplitudes`, `LebedevExtrapolationResult`, `compute_extrapolated_lebedev_displacement_amplitudes`
 - cubic spline worldline: `SplineBranchPath`, `compute_spline_branch_phase_matrix`
 - Fock-space Hamiltonian 진화: `ModeEvolution`, `FockSpaceEvolutionResult`, `compute_fock_space_evolution`
 - adaptive quadrature: `AdaptivePhaseResult`, `compute_adaptive_phase_integral`
@@ -201,7 +202,7 @@
 
 ### 수치 알고리즘 한계
 
-- **Lebedev quadrature 제한 (추가 개선, exact 고차 table 은 아님)**: `compute_lebedev_displacement_amplitudes`가 기존의 tabulated `6/14/26`-point Lebedev rule 은 그대로 유지하면서, 추가로 `50/110/194` 방향의 결정론적 quasi-uniform spherical rule 도 지원한다. 또한 가장 가까운 더 낮은 차수 rule 과의 차이를 `angular_error_estimate`로 함께 반환해, 단순히 direction count 를 늘리는 데서 멈추지 않고 angular convergence 를 바로 진단할 수 있다. 다만 canonical 고차 Lebedev table 자체를 모두 내장한 것은 아니므로, 완전한 다항 정확도 보장이 필요한 경우에는 향후 정확한 tabulated rule 확장이 더 필요하다.
+- **Lebedev quadrature 제한 (대부분 해소, canonical exact 고차 table 전체 내장은 아님)**: `compute_lebedev_displacement_amplitudes`가 tabulated `6/14/26`-point Lebedev rule 을 유지하면서, 그보다 큰 임의의 `lebedev_order`에 대해 같은 direction count 의 결정론적 quasi-uniform spherical rule 을 바로 생성한다. 고차 rule 에서는 직전의 절반 수준 direction count 와 비교한 `angular_error_estimate` 및 `reference_order`를 함께 반환해 angular refinement 진단도 가능하다. 추가로 `compute_extrapolated_lebedev_displacement_amplitudes`가 여러 direction count 결과를 모아 `1 / N_dir` 변수에 대한 Neville 외삽으로 무한 방향수 극한 추정치와 보수적 `estimated_error`를 제공하므로, 더 이상 `50/110/194` 같은 고정 차수 집합에 묶이지 않는다. 다만 canonical high-order Lebedev table 자체를 전부 tabulate 한 것은 아니므로, 엄밀한 다항 정확도 증명이 필요한 경우에는 향후 exact rule 데이터 확장이 여전히 유효하다.
 - ~~유한차분 안정성~~ → `solve_finite_difference_kg`가 구간별 Courant 수를 계산해 필요한 만큼 leapfrog substep 수를 자동 선택할 뿐 아니라, `time_error_tolerance`가 주어지면 각 coarse interval 에 대해 `N` substep 적분과 `2N` substep 적분을 비교하는 local error estimate 를 계산해 허용오차 이하가 될 때까지, 또는 `max_time_substeps` 상한에 도달할 때까지 substep 수를 재적응시킨다. 결과의 `local_error_estimates`, `time_error_tolerance`, `effective_time_step`, `substeps_per_interval`로 안정성과 정확도 제어가 실제로 어떻게 선택되었는지 추적할 수 있다.
 
 ## 사용 방법
