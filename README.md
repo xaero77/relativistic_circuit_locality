@@ -55,6 +55,7 @@
 프로그램이 직접 구현하는 대표 수식은 다음과 같다.
 
 - branch 위상:
+  `분류: 논문 기반식`
   $$
   \theta_{rs}
   =
@@ -69,16 +70,19 @@
   -\int dt\, q_a q_b\, K\!\left(\lvert x_a(t)-x_b(t)\rvert\right)
   $$
 - Yukawa kernel:
+  `분류: 코드 구현식`
   $$
   K(r)=\frac{e^{-mr}}{4\pi\,\max(r,\mathrm{cutoff})}
   $$
 - 상대 얽힘 위상:
+  `분류: 논문 기반식 / 양자컴퓨팅 표준 위상 조합`
   $$
   \theta_{\mathrm{ent}}
   =
   \theta_{00}-\theta_{01}-\theta_{10}+\theta_{11}
   $$
 - branch displacement amplitude:
+  `분류: 교과서 표준식 + 코드 구현식`
   $$
   \alpha_r(\mathbf{k})
   =
@@ -88,10 +92,12 @@
   \rho_r(\mathbf{k},t)
   $$
 - mode energy:
+  `분류: 교과서 표준식`
   $$
   \omega_{\mathbf{k}}=\sqrt{\lvert\mathbf{k}\rvert^2+m^2}
   $$
 - coherent-state overlap:
+  `분류: 교과서 표준식`
   $$
   \langle \alpha \mid \beta \rangle
   =
@@ -102,12 +108,14 @@
   \right)
   $$
 - thermal decoherence suppression:
+  `분류: 교과서 표준식 + 개방계 구현식`
   $$
   \exp\!\left[
   -\frac{1}{2}\sum_k (2n_k+1)\,\lvert \Delta\alpha_k\rvert^2
   \right]
   $$
 - Lindblad 진화:
+  `분류: 교과서 표준식`
   $$
   \frac{d\rho}{dt}
   =
@@ -118,6 +126,7 @@
   \right)
   $$
 - Feynman-Vernon 2-point kernel 적분:
+  `분류: 교과서 표준식 + 코드 구현식`
   $$
   \Phi_{\mathrm{FV}}
   \sim
@@ -128,12 +137,14 @@
   $$
   구현은 `influence_kernel_mode="feynman_vernon"`에서 noise/dissipation kernel 을 주파수 적분으로 구성해 비국소 이중시간 적분으로 평가한다.
 - proper time:
+  `분류: 교과서 표준식`
   $$
   \tau
   =
   \int dt\, \sqrt{1-\frac{\lvert v(t)\rvert^2}{c^2}}
   $$
 - running coupling:
+  `분류: 교과서/QFT 표준식 + 코드 구현식`
   $$
   \alpha(E)
   =
