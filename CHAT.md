@@ -145,6 +145,17 @@
 - symbolic bookkeeping 의 amplitude norm 과 위상 행렬 antisymmetry 를 독립 재계산으로 수치 검증하는 `BookkeepingValidationResult`, `validate_symbolic_bookkeeping` 추가
 - 3차 Magnus, lattice 보간, running coupling, bookkeeping 검증에 대한 회귀 테스트 추가
 
+## 적용된 기능 정리
+
+- 기본 branch 기하와 인과성 판정: worldline 보간, 최소 거리, spacelike mediation interval, 상대 얽힘 위상 계산까지 구현했다.
+- 전파/위상 계산 확장: `instantaneous`, `retarded`, `time_symmetric`, `causal_history`, `kg_retarded` 전파 모드와 branch-pair self/cross/interaction 위상 분해를 지원한다.
+- field sampling 및 격자 해석: sampled spacetime phase, retarded Green function 표본, lattice evolution, multiscale/spectral/dynamic-boundary surrogate PDE 계층을 구현했다.
+- 연속 운동량/코히런트 상태 해석: displacement amplitude, continuum angular/radial quadrature, extrapolation, coherent/Gaussian/cat overlap, multimode tomography 및 bookkeeping 검증을 포함한다.
+- backreaction 및 연구형 bundle: mediator-specific backreaction, coupled/self-consistent/nonlinear iteration, gauge-gravity surrogate, exact-mediator/reference-PDE/research-grade closure bundle 을 포함한다.
+- 물리적 충실도 확장: proper time, tensor mediator, renormalized self-energy subtraction, decoherence/open-system surrogate, multi-body correlation, entanglement/occupation 진단을 추가했다.
+- 수치 알고리즘 고도화: exact canonical Lebedev quadrature, adaptive phase quadrature, Richardson/Neville extrapolation, spline worldline, 3차 Magnus, IDW lattice interpolation, running coupling 을 적용했다.
+- 검증 체계: `tests/test_scalar_field.py` 중심의 회귀 테스트가 위 기능군 전반을 커버하며, 문서의 현재 한계 섹션은 해소된 항목과 남은 연구형 과제를 분리해 정리한다.
+
 ## 현재 공개 API 요약
 
 - 기본 기하/인과성: `BranchPath`, `TrajectoryPoint`, `compute_closest_approach`, `field_mediation_intervals`, `is_field_mediated`
