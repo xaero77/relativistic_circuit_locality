@@ -55,29 +55,90 @@
 프로그램이 직접 구현하는 대표 수식은 다음과 같다.
 
 - branch 위상:
-  `theta_rs = -1/2 ∫ dt_a ∫ dt_b rho_rs(t_a) G(t_a, t_b) rho_rs(t_b)`
-  또는 준정적 근사에서는 `theta_rs ≈ -∫ dt q_a q_b K(|x_a(t) - x_b(t)|)` 형태로 계산한다.
+  $$
+  \theta_{rs}
+  =
+  -\frac{1}{2}
+  \int dt_a \int dt_b\,
+  \rho_{rs}(t_a)\, G(t_a,t_b)\, \rho_{rs}(t_b)
+  $$
+  준정적 Yukawa 근사에서는
+  $$
+  \theta_{rs}
+  \approx
+  -\int dt\, q_a q_b\, K\!\left(\lvert x_a(t)-x_b(t)\rvert\right)
+  $$
 - Yukawa kernel:
-  `K(r) = exp(-m r) / (4 pi max(r, cutoff))`
+  $$
+  K(r)=\frac{e^{-mr}}{4\pi\,\max(r,\mathrm{cutoff})}
+  $$
 - 상대 얽힘 위상:
-  `theta_ent = theta_00 - theta_01 - theta_10 + theta_11`
+  $$
+  \theta_{\mathrm{ent}}
+  =
+  \theta_{00}-\theta_{01}-\theta_{10}+\theta_{11}
+  $$
 - branch displacement amplitude:
-  `alpha_r(k) = -(i / sqrt(2 omega_k)) ∫ dt exp(i omega_k t) rho_r(k, t)`
+  $$
+  \alpha_r(\mathbf{k})
+  =
+  -\frac{i}{\sqrt{2\omega_{\mathbf{k}}}}
+  \int dt\,
+  e^{i\omega_{\mathbf{k}} t}\,
+  \rho_r(\mathbf{k},t)
+  $$
 - mode energy:
-  `omega_k = sqrt(|k|^2 + m^2)`
+  $$
+  \omega_{\mathbf{k}}=\sqrt{\lvert\mathbf{k}\rvert^2+m^2}
+  $$
 - coherent-state overlap:
-  `<alpha|beta> = exp(-1/2 ||alpha||^2 - 1/2 ||beta||^2 + alpha^* · beta)`
+  $$
+  \langle \alpha \mid \beta \rangle
+  =
+  \exp\!\left(
+  -\frac{1}{2}\lVert\alpha\rVert^2
+  -\frac{1}{2}\lVert\beta\rVert^2
+  +\alpha^\ast\!\cdot\!\beta
+  \right)
+  $$
 - thermal decoherence suppression:
-  `exp[-1/2 Σ_k (2 n_k + 1) |Delta alpha_k|^2]`
+  $$
+  \exp\!\left[
+  -\frac{1}{2}\sum_k (2n_k+1)\,\lvert \Delta\alpha_k\rvert^2
+  \right]
+  $$
 - Lindblad 진화:
-  `d rho / dt = Σ_i gamma_i (L_i rho L_i^dagger - 1/2 {L_i^dagger L_i, rho})`
+  $$
+  \frac{d\rho}{dt}
+  =
+  \sum_i \gamma_i
+  \left(
+  L_i \rho L_i^\dagger
+  -\frac{1}{2}\{L_i^\dagger L_i,\rho\}
+  \right)
+  $$
 - Feynman-Vernon 2-point kernel 적분:
-  `Phi_FV ~ ∫ dt ∫ dt' Delta J(t) [D(t-t') + i N(t-t')] J(t')`
+  $$
+  \Phi_{\mathrm{FV}}
+  \sim
+  \int dt \int dt'\,
+  \Delta J(t)\,
+  \bigl[D(t-t')+i\,N(t-t')\bigr]\,
+  J(t')
+  $$
   구현은 `influence_kernel_mode="feynman_vernon"`에서 noise/dissipation kernel 을 주파수 적분으로 구성해 비국소 이중시간 적분으로 평가한다.
 - proper time:
-  `tau = ∫ dt sqrt(1 - |v(t)|^2 / c^2)`
+  $$
+  \tau
+  =
+  \int dt\, \sqrt{1-\frac{\lvert v(t)\rvert^2}{c^2}}
+  $$
 - running coupling:
-  `alpha(E) = alpha_0 / (1 + beta alpha_0 ln(E / mu))`
+  $$
+  \alpha(E)
+  =
+  \frac{\alpha_0}{1+\beta\alpha_0\ln(E/\mu)}
+  $$
 
 여기서 각 적분은 코드에서 Gauss-Legendre quadrature, adaptive refinement, exact supported Lebedev spherical quadrature, Neville/Richardson extrapolation 같은 수치 규칙으로 근사된다.
 
