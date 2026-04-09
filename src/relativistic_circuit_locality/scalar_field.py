@@ -697,6 +697,9 @@ class DecoherenceResult:
     influence_residual: float
     influence_converged: bool
     lindblad_trace: float
+    influence_kernel_mode: str = "surrogate"
+    feynman_vernon_noise_matrix: tuple[tuple[float, ...], ...] = tuple()
+    feynman_vernon_dissipation_matrix: tuple[tuple[float, ...], ...] = tuple()
 
 
 @dataclass(frozen=True)
@@ -5247,6 +5250,9 @@ def compute_decoherence_model(
     bath_dressing_strength: float = 1.0,
     influence_time_grid: tuple[float, ...] | None = None,
     influence_phase_strength: float = 0.0,
+    influence_kernel_mode: Literal["surrogate", "feynman_vernon"] = "surrogate",
+    feynman_vernon_frequency_cutoff: float | None = None,
+    feynman_vernon_frequency_samples: int = 64,
     non_gaussian_cumulant: Callable[[float, float], float] | None = None,
     non_gaussian_cumulant_strength: float = 0.0,
     influence_iterations: int = 1,
@@ -5512,6 +5518,64 @@ def compute_decoherence_model(
         steps = max(lindblad_steps, 8)
         return tuple(window * step / float(steps) for step in range(steps + 1))
 
+    def _resolve_feynman_vernon_frequency_cutoff() -> float:
+        if feynman_vernon_frequency_cutoff is not None:
+            if feynman_vernon_frequency_cutoff <= 0.0:
+                raise ValueError("feynman_vernon_frequency_cutoff must be positive.")
+            return feynman_vernon_frequency_cutoff
+        mode_energies = tuple(sqrt(_dot(momentum, momentum) + field_mass * field_mass) for momentum in momenta)
+        thermal_scale = environment_temperature if environment_temperature is not None else 0.0
+        return max(mode_energies + (field_mass, thermal_scale, 1.0)) * 2.0
+
+    def _resolve_pair_source_histories(
+        resolved_grid: tuple[float, ...],
+    ) -> tuple[tuple[float, ...], ...]:
+        histories: list[tuple[float, ...]] = []
+        mode_energies = tuple(sqrt(_dot(momentum, momentum) + field_mass * field_mass) for momentum in momenta)
+        for r in range(n_a):
+            for s in range(n_b):
+                samples: list[float] = []
+                for sample_time in resolved_grid:
+                    source_signal = 0.0
+                    for momentum, omega, spectral_weight in zip(momenta, mode_energies, spectral_weights):
+                        amplitude_a = _source_form_factor(branches_a[r], momentum, sample_time, source_width)
+                        amplitude_b = _source_form_factor(branches_b[s], momentum, sample_time, source_width)
+                        source_signal += (
+                            spectral_weight * (amplitude_a + amplitude_b).real / sqrt(2.0 * omega)
+                        )
+                    samples.append(source_signal)
+                histories.append(tuple(samples))
+        return tuple(histories)
+
+    def _feynman_vernon_kernel_values(
+        time_difference: float,
+        frequency_cutoff: float,
+    ) -> tuple[float, float]:
+        if feynman_vernon_frequency_samples <= 0:
+            raise ValueError("feynman_vernon_frequency_samples must be positive.")
+        dw = frequency_cutoff / float(feynman_vernon_frequency_samples)
+        noise_kernel = 0.0
+        dissipation_kernel = 0.0
+        for frequency_index in range(feynman_vernon_frequency_samples):
+            omega = (frequency_index + 0.5) * dw
+            spectral_value = (
+                max(float(bath_spectral_density(omega)), 0.0)
+                if bath_spectral_density is not None
+                else 1.0
+            )
+            if environment_temperature is None or environment_temperature <= 0.0:
+                thermal_factor = 1.0
+            else:
+                beta_omega = omega / environment_temperature
+                if beta_omega > 700.0:
+                    thermal_factor = 1.0
+                else:
+                    exp_beta = exp(beta_omega)
+                    thermal_factor = (exp_beta + 1.0) / max(exp_beta - 1.0, 1e-12)
+            noise_kernel += spectral_value * thermal_factor * cos(omega * time_difference) * dw
+            dissipation_kernel += spectral_value * sin(omega * time_difference) * dw
+        return noise_kernel, dissipation_kernel
+
     def _compute_influence_functional_terms(
         energies: tuple[float, ...],
         resolved_grid: tuple[float, ...],
@@ -5552,8 +5616,84 @@ def compute_decoherence_model(
             influence_phase.append(row)
         return tuple(tuple(row) for row in influence_phase), cumulant_norm * abs(non_gaussian_cumulant_strength)
 
+    def _compute_feynman_vernon_terms(
+        resolved_grid: tuple[float, ...],
+        coherence_weights: tuple[tuple[float, ...], ...] | None = None,
+    ) -> tuple[
+        tuple[tuple[float, ...], ...],
+        tuple[tuple[float, ...], ...],
+        tuple[tuple[float, ...], ...],
+        float,
+    ]:
+        resolved_histories = _resolve_pair_source_histories(resolved_grid)
+        frequency_cutoff = _resolve_feynman_vernon_frequency_cutoff()
+        time_weights = tuple(
+            0.5 * (resolved_grid[min(index + 1, len(resolved_grid) - 1)] - resolved_grid[max(index - 1, 0)])
+            if 0 < index < len(resolved_grid) - 1
+            else (resolved_grid[1] - resolved_grid[0] if index == 0 else resolved_grid[-1] - resolved_grid[-2])
+            for index in range(len(resolved_grid))
+        )
+        kernel_cache: dict[float, tuple[float, float]] = {}
+        phase_rows: list[list[float]] = []
+        noise_rows: list[list[float]] = []
+        dissipation_rows: list[list[float]] = []
+        cumulant_norm = 0.0
+
+        for i in range(n_total):
+            phase_row: list[float] = []
+            noise_row: list[float] = []
+            dissipation_row: list[float] = []
+            for j in range(n_total):
+                if i == j:
+                    phase_row.append(0.0)
+                    noise_row.append(0.0)
+                    dissipation_row.append(0.0)
+                    continue
+                noise_value = 0.0
+                dissipation_value = 0.0
+                cumulant_value_total = 0.0
+                history_i = resolved_histories[i]
+                history_j = resolved_histories[j]
+                for left_index, left_time in enumerate(resolved_grid):
+                    delta_left = history_i[left_index] - history_j[left_index]
+                    for right_index, right_time in enumerate(resolved_grid):
+                        tau = left_time - right_time
+                        cache_key = round(tau, 12)
+                        if cache_key not in kernel_cache:
+                            kernel_cache[cache_key] = _feynman_vernon_kernel_values(tau, frequency_cutoff)
+                        noise_kernel, dissipation_kernel = kernel_cache[cache_key]
+                        weight = time_weights[left_index] * time_weights[right_index]
+                        delta_right = history_i[right_index] - history_j[right_index]
+                        average_right = 0.5 * (history_i[right_index] + history_j[right_index])
+                        noise_value += weight * delta_left * noise_kernel * delta_right
+                        dissipation_value += weight * delta_left * dissipation_kernel * average_right
+                        if non_gaussian_cumulant is not None and non_gaussian_cumulant_strength != 0.0:
+                            cumulant_contribution = weight * non_gaussian_cumulant(left_time, right_time)
+                            cumulant_value_total += cumulant_contribution
+                            cumulant_norm += abs(cumulant_contribution)
+                scale = environment_coupling * influence_phase_strength
+                if coherence_weights is not None:
+                    scale *= 1.0 + coherence_weights[i][j]
+                phase_value = scale * dissipation_value
+                noise_entry = abs(scale) * abs(noise_value)
+                if non_gaussian_cumulant is not None and non_gaussian_cumulant_strength != 0.0:
+                    phase_value += non_gaussian_cumulant_strength * cumulant_value_total
+                phase_row.append(phase_value)
+                noise_row.append(noise_entry)
+                dissipation_row.append(scale * dissipation_value)
+            phase_rows.append(phase_row)
+            noise_rows.append(noise_row)
+            dissipation_rows.append(dissipation_row)
+        return (
+            tuple(tuple(row) for row in phase_rows),
+            tuple(tuple(row) for row in noise_rows),
+            tuple(tuple(row) for row in dissipation_rows),
+            cumulant_norm * abs(non_gaussian_cumulant_strength),
+        )
+
     def _compute_coherence_matrix_with_influence(
         active_influence_phase: tuple[tuple[float, ...], ...],
+        active_noise_matrix: tuple[tuple[float, ...], ...],
     ) -> tuple[tuple[complex, ...], ...]:
         coherence: list[list[complex]] = []
         for r in range(n_a):
@@ -5573,7 +5713,10 @@ def compute_decoherence_model(
                             + colored_noise_norm
                             + memory_strength * memory_kernel_norm
                         )
-                        suppression = exp(-0.5 * thermal_diff_sq * suppression_strength)
+                        suppression = exp(
+                            -0.5 * thermal_diff_sq * suppression_strength
+                            - active_noise_matrix[r * n_b + s][rp * n_b + sp]
+                        )
                         phase = compute_displacement_operator_phase(alpha_rs, alpha_rps)
                         phase += active_influence_phase[r * n_b + s][rp * n_b + sp]
                         row.append(suppression * complex_exp(1j * phase))
@@ -5613,30 +5756,59 @@ def compute_decoherence_model(
     memory_kernel_norm = _compute_memory_kernel_norm(resolved_memory_times)
     branch_energies = _resolve_branch_energies()
     resolved_influence_grid = _resolve_influence_time_grid()
+    zero_influence_matrix = tuple(tuple(0.0 for _ in range(n_total)) for _ in range(n_total))
     if influence_iterations <= 0:
         raise ValueError("influence_iterations must be positive.")
     if not 0.0 < influence_relaxation <= 1.0:
         raise ValueError("influence_relaxation must be in (0, 1].")
-    base_influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
-        branch_energies,
-        resolved_influence_grid,
-    )
+    if influence_kernel_mode == "surrogate":
+        base_influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
+            branch_energies,
+            resolved_influence_grid,
+        )
+        feynman_vernon_noise_matrix = zero_influence_matrix
+        feynman_vernon_dissipation_matrix = zero_influence_matrix
+    elif influence_kernel_mode == "feynman_vernon":
+        (
+            base_influence_phase_matrix,
+            feynman_vernon_noise_matrix,
+            feynman_vernon_dissipation_matrix,
+            non_gaussian_cumulant_norm,
+        ) = _compute_feynman_vernon_terms(resolved_influence_grid)
+    else:
+        raise ValueError("influence_kernel_mode must be 'surrogate' or 'feynman_vernon'.")
     influence_phase_matrix = base_influence_phase_matrix
     influence_residual = 0.0
     influence_steps_taken = 0
     influence_converged = influence_iterations == 1
-    coherence_matrix_current = _compute_coherence_matrix_with_influence(influence_phase_matrix)
+    coherence_matrix_current = _compute_coherence_matrix_with_influence(
+        influence_phase_matrix,
+        feynman_vernon_noise_matrix,
+    )
     for iteration in range(influence_iterations):
         influence_steps_taken = iteration + 1
         coherence_weights = tuple(
             tuple(abs(value) for value in row)
             for row in coherence_matrix_current
         )
-        updated_influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
-            branch_energies,
-            resolved_influence_grid,
-            coherence_weights=coherence_weights,
-        )
+        if influence_kernel_mode == "surrogate":
+            updated_influence_phase_matrix, non_gaussian_cumulant_norm = _compute_influence_functional_terms(
+                branch_energies,
+                resolved_influence_grid,
+                coherence_weights=coherence_weights,
+            )
+            updated_noise_matrix = feynman_vernon_noise_matrix
+            updated_dissipation_matrix = feynman_vernon_dissipation_matrix
+        else:
+            (
+                updated_influence_phase_matrix,
+                updated_noise_matrix,
+                updated_dissipation_matrix,
+                non_gaussian_cumulant_norm,
+            ) = _compute_feynman_vernon_terms(
+                resolved_influence_grid,
+                coherence_weights=coherence_weights,
+            )
         blended_influence_phase_matrix = tuple(
             tuple(
                 (1.0 - influence_relaxation) * current + influence_relaxation * updated
@@ -5644,13 +5816,32 @@ def compute_decoherence_model(
             )
             for current_row, updated_row in zip(influence_phase_matrix, updated_influence_phase_matrix)
         )
+        blended_noise_matrix = tuple(
+            tuple(
+                (1.0 - influence_relaxation) * current + influence_relaxation * updated
+                for current, updated in zip(current_row, updated_row)
+            )
+            for current_row, updated_row in zip(feynman_vernon_noise_matrix, updated_noise_matrix)
+        )
+        blended_dissipation_matrix = tuple(
+            tuple(
+                (1.0 - influence_relaxation) * current + influence_relaxation * updated
+                for current, updated in zip(current_row, updated_row)
+            )
+            for current_row, updated_row in zip(feynman_vernon_dissipation_matrix, updated_dissipation_matrix)
+        )
         influence_residual = max(
             abs(updated - current)
             for current_row, updated_row in zip(influence_phase_matrix, blended_influence_phase_matrix)
             for current, updated in zip(current_row, updated_row)
         )
         influence_phase_matrix = blended_influence_phase_matrix
-        coherence_matrix_current = _compute_coherence_matrix_with_influence(influence_phase_matrix)
+        feynman_vernon_noise_matrix = blended_noise_matrix
+        feynman_vernon_dissipation_matrix = blended_dissipation_matrix
+        coherence_matrix_current = _compute_coherence_matrix_with_influence(
+            influence_phase_matrix,
+            feynman_vernon_noise_matrix,
+        )
         if influence_residual <= influence_tolerance:
             influence_converged = True
             break
@@ -5773,6 +5964,9 @@ def compute_decoherence_model(
         influence_residual=influence_residual,
         influence_converged=influence_converged,
         lindblad_trace=float(np.trace(density_matrix).real),
+        influence_kernel_mode=influence_kernel_mode,
+        feynman_vernon_noise_matrix=feynman_vernon_noise_matrix,
+        feynman_vernon_dissipation_matrix=feynman_vernon_dissipation_matrix,
     )
 
 

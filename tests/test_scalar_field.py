@@ -1344,6 +1344,9 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.influence_residual, 0.0)
         self.assertTrue(result.influence_converged)
         self.assertAlmostEqual(result.lindblad_trace, 1.0)
+        self.assertEqual(result.influence_kernel_mode, "surrogate")
+        self.assertEqual(result.feynman_vernon_noise_matrix, ((0.0,),))
+        self.assertEqual(result.feynman_vernon_dissipation_matrix, ((0.0,),))
 
     def test_decoherence_model_thermal_environment_suppresses_off_diagonal(self) -> None:
         source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
@@ -1599,6 +1602,48 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreaterEqual(result.influence_iterations, 1)
         self.assertLessEqual(result.influence_residual, 1e-4)
         self.assertTrue(result.influence_converged)
+
+    def test_decoherence_model_feynman_vernon_kernel_adds_nonlocal_noise_and_phase(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-0.8, 0.0, 0.0)), (2.0, (-0.2, 0.4, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (1.6, 0.3, 0.0))])
+        surrogate = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.4, 0.0, 0.0), (0.8, 0.0, 0.0)),
+            field_mass=0.5,
+            environment_temperature=0.6,
+            bath_spectral_density=lambda omega: 1.0 / (1.0 + omega * omega),
+            colored_noise_correlation=lambda tau: exp(-tau),
+            influence_phase_strength=0.18,
+            influence_time_grid=(0.0, 0.4, 0.8, 1.2),
+        )
+        feynman_vernon = compute_decoherence_model(
+            (source0, source1),
+            (target,),
+            ((0.4, 0.0, 0.0), (0.8, 0.0, 0.0)),
+            field_mass=0.5,
+            environment_temperature=0.6,
+            bath_spectral_density=lambda omega: 1.0 / (1.0 + omega * omega),
+            influence_kernel_mode="feynman_vernon",
+            influence_phase_strength=0.18,
+            influence_time_grid=(0.0, 0.4, 0.8, 1.2),
+            feynman_vernon_frequency_cutoff=2.5,
+            feynman_vernon_frequency_samples=48,
+            influence_iterations=4,
+            influence_tolerance=1e-5,
+        )
+        self.assertEqual(feynman_vernon.influence_kernel_mode, "feynman_vernon")
+        self.assertGreater(feynman_vernon.feynman_vernon_noise_matrix[0][1], 0.0)
+        self.assertGreater(abs(feynman_vernon.influence_phase_matrix[0][1]), 0.0)
+        self.assertNotAlmostEqual(
+            abs(feynman_vernon.coherence_matrix[0][1]),
+            abs(surrogate.coherence_matrix[0][1]),
+        )
+        self.assertNotAlmostEqual(
+            feynman_vernon.coherence_matrix[0][1].imag,
+            surrogate.coherence_matrix[0][1].imag,
+        )
 
     def test_multi_body_correlation_pairwise_is_nonzero(self) -> None:
         a = branch("A", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
