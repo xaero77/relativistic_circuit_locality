@@ -50,6 +50,37 @@
 
 최근 개선으로 branch 들이 동일한 시간 샘플을 공유해야 한다는 제약을 없앴다. 서로 다른 시간 이산화로 주어진 궤적도 겹치는 시간 구간에서 선형 보간하여 최소 접근 거리, mediation interval, branch phase 를 계산한다.
 
+## 구현 수식 요약
+
+프로그램이 직접 구현하는 대표 수식은 다음과 같다.
+
+- branch 위상:
+  `theta_rs = -1/2 ∫ dt_a ∫ dt_b rho_rs(t_a) G(t_a, t_b) rho_rs(t_b)`
+  또는 준정적 근사에서는 `theta_rs ≈ -∫ dt q_a q_b K(|x_a(t) - x_b(t)|)` 형태로 계산한다.
+- Yukawa kernel:
+  `K(r) = exp(-m r) / (4 pi max(r, cutoff))`
+- 상대 얽힘 위상:
+  `theta_ent = theta_00 - theta_01 - theta_10 + theta_11`
+- branch displacement amplitude:
+  `alpha_r(k) = -(i / sqrt(2 omega_k)) ∫ dt exp(i omega_k t) rho_r(k, t)`
+- mode energy:
+  `omega_k = sqrt(|k|^2 + m^2)`
+- coherent-state overlap:
+  `<alpha|beta> = exp(-1/2 ||alpha||^2 - 1/2 ||beta||^2 + alpha^* · beta)`
+- thermal decoherence suppression:
+  `exp[-1/2 Σ_k (2 n_k + 1) |Delta alpha_k|^2]`
+- Lindblad 진화:
+  `d rho / dt = Σ_i gamma_i (L_i rho L_i^dagger - 1/2 {L_i^dagger L_i, rho})`
+- Feynman-Vernon 2-point kernel 적분:
+  `Phi_FV ~ ∫ dt ∫ dt' Delta J(t) [D(t-t') + i N(t-t')] J(t')`
+  구현은 `influence_kernel_mode="feynman_vernon"`에서 noise/dissipation kernel 을 주파수 적분으로 구성해 비국소 이중시간 적분으로 평가한다.
+- proper time:
+  `tau = ∫ dt sqrt(1 - |v(t)|^2 / c^2)`
+- running coupling:
+  `alpha(E) = alpha_0 / (1 + beta alpha_0 ln(E / mu))`
+
+여기서 각 적분은 코드에서 Gauss-Legendre quadrature, adaptive refinement, exact supported Lebedev spherical quadrature, Neville/Richardson extrapolation 같은 수치 규칙으로 근사된다.
+
 ## 공개 API
 
 - 기하/인과성: `BranchPath`, `TrajectoryPoint`, `compute_closest_approach`, `field_mediation_intervals`, `is_field_mediated`
