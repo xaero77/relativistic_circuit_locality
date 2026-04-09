@@ -77,6 +77,7 @@ _LEBEDEV_WEIGHTS_26: tuple[float, ...] = (
     + tuple(4.0 / 105.0 for _ in range(12))
     + tuple(27.0 / 840.0 for _ in range(8))
 )
+_SUPPORTED_LEBEDEV_ORDERS: tuple[int, ...] = (6, 14, 26, 50, 110, 194)
 
 
 @dataclass(frozen=True)
@@ -4464,6 +4465,36 @@ def _unit_vector(vector: Vector3, *, tolerance: float = 1e-12) -> Vector3:
     return _scale(vector, 1.0 / magnitude)
 
 
+def _fibonacci_sphere_directions(count: int) -> tuple[Vector3, ...]:
+    if count <= 0:
+        raise ValueError("count must be positive.")
+    if count == 1:
+        return ((0.0, 0.0, 1.0),)
+    golden_angle = pi * (3.0 - sqrt(5.0))
+    directions: list[Vector3] = []
+    for index in range(count):
+        z = 1.0 - (2.0 * index + 1.0) / float(count)
+        radial = sqrt(max(1.0 - z * z, 0.0))
+        azimuth = golden_angle * index
+        directions.append((radial * np.cos(azimuth), radial * np.sin(azimuth), z))
+    return tuple(directions)
+
+
+@lru_cache(maxsize=None)
+def _resolve_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float, ...]]:
+    if order == 6:
+        return _AXIS_DIRECTIONS, _LEBEDEV_WEIGHTS_6
+    if order == 14:
+        return _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_14
+    if order == 26:
+        return _AXIS_DIRECTIONS + _EDGE_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_26
+    if order in (50, 110, 194):
+        directions = _fibonacci_sphere_directions(order)
+        weights = tuple(1.0 / float(order) for _ in range(order))
+        return directions, weights
+    raise ValueError(f"lebedev_order must be one of {_SUPPORTED_LEBEDEV_ORDERS}.")
+
+
 def _transverse_projector(
     direction: Vector3,
     *,
@@ -6629,20 +6660,16 @@ def compute_lebedev_displacement_amplitudes(
     radial_quadrature_order: int = 5,
     source_width: float = 0.0,
     time_quadrature_order: int = 3,
-    lebedev_order: Literal[6, 14, 26] = 14,
+    lebedev_order: int = 14,
 ) -> LebedevQuadratureResult:
-    """Lebedev 구면 quadrature 가중치를 써서 연속 운동량 적분의 각도 평균을 계산한다."""
+    """구면 quadrature 가중치로 연속 운동량 적분의 각도 평균을 계산한다.
+
+    ``6/14/26``은 tabulated Lebedev rule 을 사용하고,
+    ``50/110/194``는 같은 direction count 를 갖는 결정론적 quasi-uniform rule 을 사용한다.
+    """
     if momentum_cutoff <= 0.0:
         raise ValueError("momentum_cutoff must be positive.")
-    if lebedev_order == 6:
-        directions = _AXIS_DIRECTIONS
-        weights = _LEBEDEV_WEIGHTS_6
-    elif lebedev_order == 14:
-        directions = _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS
-        weights = _LEBEDEV_WEIGHTS_14
-    else:
-        directions = _AXIS_DIRECTIONS + _EDGE_DIRECTIONS + _DIAGONAL_DIRECTIONS
-        weights = _LEBEDEV_WEIGHTS_26
+    directions, weights = _resolve_lebedev_rule(lebedev_order)
 
     radial_nodes, radial_weights = _gauss_legendre_rule(radial_quadrature_order)
     amplitudes: list[complex] = []

@@ -1109,6 +1109,30 @@ class ScalarFieldTests(unittest.TestCase):
         )
         self.assertGreater(r26.direction_count, r14.direction_count)
 
+    def test_lebedev_supports_higher_order_direction_rules(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        r50 = compute_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=50,
+        )
+        r110 = compute_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=110,
+        )
+        r194 = compute_lebedev_displacement_amplitudes(
+            (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=194,
+        )
+        self.assertEqual(r50.direction_count, 50)
+        self.assertEqual(r110.direction_count, 110)
+        self.assertEqual(r194.direction_count, 194)
+        self.assertGreater(r194.direction_count, r110.direction_count)
+        self.assertGreater(r110.direction_count, r50.direction_count)
+
+    def test_lebedev_invalid_higher_order_is_rejected(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        with self.assertRaises(ValueError):
+            compute_lebedev_displacement_amplitudes(
+                (source,), field_mass=0.5, momentum_cutoff=1.0, lebedev_order=42,
+            )
+
     # --- 물리적 충실도 확장 ---
 
     def test_proper_time_worldline_static_branch(self) -> None:

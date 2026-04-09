@@ -201,7 +201,7 @@
 
 ### 수치 알고리즘 한계
 
-- **Lebedev quadrature 제한**: 최대 26-point rule 까지만 제공한다. 더 높은 차수(50, 110, 194-point 등)가 필요한 경우 확장해야 한다.
+- **Lebedev quadrature 제한 (대부분 해소, exact 고차 table 은 아님)**: `compute_lebedev_displacement_amplitudes`가 기존의 tabulated `6/14/26`-point Lebedev rule 은 그대로 유지하면서, 추가로 `50/110/194` 방향의 결정론적 quasi-uniform spherical rule 도 지원한다. 따라서 저차 angular 평균을 넘어 더 촘촘한 구면 방향 샘플링으로 displacement amplitude 의 angular convergence 를 점검할 수 있다. 다만 canonical 고차 Lebedev table 자체를 모두 내장한 것은 아니므로, 완전한 다항 정확도 보장이 필요한 경우에는 향후 정확한 tabulated rule 확장이 더 필요하다.
 - ~~유한차분 안정성~~ → `solve_finite_difference_kg`가 구간별 Courant 수를 계산해 필요한 만큼 leapfrog substep 수를 자동 선택한다. 사용자는 coarse `time_slices`를 유지한 채 안정한 내부 `effective_time_step`과 `substeps_per_interval` 정보를 결과에서 확인할 수 있다. 다만 완전한 local error control 기반의 비균일 적응 시간적분은 아직 없다.
 
 ## 사용 방법
