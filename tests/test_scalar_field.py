@@ -1410,6 +1410,37 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertAlmostEqual(result.lindblad_trace, 1.0, places=8)
         self.assertLess(result.purity, 1.0)
 
+    def test_decoherence_model_auto_lindblad_covers_all_energy_level_pairs(self) -> None:
+        source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        source2 = branch("A2", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        temperature = 0.9
+        result = compute_decoherence_model(
+            (source0, source1, source2),
+            (target,),
+            ((0.5, 0.0, 0.0),),
+            field_mass=0.5,
+            environment_coupling=0.2,
+            environment_temperature=temperature,
+            bath_spectral_density=lambda omega: 1.0 + 0.25 * omega,
+            auto_lindblad_from_bath=True,
+            system_transition_energies=(0.0, 0.7, 1.2),
+            dephasing_rate_scale=0.1,
+        )
+        self.assertEqual(len(result.generated_lindblad_rates), 8)
+        pair_gaps = (0.7, 1.2, 0.5)
+        for pair_index, gap in enumerate(pair_gaps):
+            emission_rate = result.generated_lindblad_rates[2 * pair_index]
+            absorption_rate = result.generated_lindblad_rates[2 * pair_index + 1]
+            self.assertGreater(emission_rate, absorption_rate)
+            self.assertAlmostEqual(
+                absorption_rate / emission_rate,
+                exp(-gap / temperature),
+                places=10,
+            )
+        self.assertLess(result.detailed_balance_deviation, 1e-10)
+
     def test_decoherence_model_auto_lamb_shift_renormalizes_energies(self) -> None:
         source0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
         source1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])

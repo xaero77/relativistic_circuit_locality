@@ -5292,54 +5292,69 @@ def compute_decoherence_model(
         if not auto_lindblad_from_bath:
             return tuple(), tuple(), 0.0
         energies = _resolve_branch_energies()
-        ground_index = min(range(n_total), key=lambda index: energies[index])
         bath_temperature = (
             detailed_balance_temperature
             if detailed_balance_temperature is not None
             else environment_temperature
         )
+        ordered_indices = tuple(sorted(range(n_total), key=lambda index: (energies[index], index)))
         operators: list[np.ndarray] = []
         rates: list[float] = []
         detailed_balance_deviation = 0.0
-        for excited_index, excited_energy in enumerate(energies):
-            if excited_index == ground_index:
-                continue
-            gap = max(excited_energy - energies[ground_index], 0.0)
-            spectral_value = (
-                max(float(bath_spectral_density(gap)), 0.0)
-                if bath_spectral_density is not None
-                else 1.0
-            )
-            if bath_temperature is None or bath_temperature <= 0.0 or gap <= 0.0:
-                thermal_factor = 0.0
-                expected_ratio = 0.0
-            else:
-                beta_gap = gap / bath_temperature
-                if beta_gap > 700.0:
+        dephasing_rates = [0.0] * n_total
+        for upper_rank in range(1, len(ordered_indices)):
+            excited_index = ordered_indices[upper_rank]
+            excited_energy = energies[excited_index]
+            for lower_rank in range(upper_rank):
+                ground_index = ordered_indices[lower_rank]
+                gap = max(excited_energy - energies[ground_index], 0.0)
+                if gap <= 0.0:
+                    continue
+                spectral_value = (
+                    max(float(bath_spectral_density(gap)), 0.0)
+                    if bath_spectral_density is not None
+                    else 1.0
+                )
+                if bath_temperature is None or bath_temperature <= 0.0:
                     thermal_factor = 0.0
                     expected_ratio = 0.0
                 else:
-                    exp_beta_gap = exp(beta_gap)
-                    thermal_factor = 1.0 / max(exp_beta_gap - 1.0, 1e-12)
-                    expected_ratio = exp(-beta_gap)
-            emission_rate = environment_coupling * spectral_value * (thermal_factor + 1.0)
-            absorption_rate = environment_coupling * spectral_value * thermal_factor
-            lowering = np.zeros((n_total, n_total), dtype=complex)
-            lowering[ground_index, excited_index] = 1.0
-            raising = np.zeros((n_total, n_total), dtype=complex)
-            raising[excited_index, ground_index] = 1.0
-            operators.extend((lowering, raising))
-            rates.extend((emission_rate, absorption_rate))
-            if emission_rate > 1e-15:
-                detailed_balance_deviation = max(
-                    detailed_balance_deviation,
-                    abs(absorption_rate / emission_rate - expected_ratio),
-                )
-            if dephasing_rate_scale > 0.0:
+                    beta_gap = gap / bath_temperature
+                    if beta_gap > 700.0:
+                        thermal_factor = 0.0
+                        expected_ratio = 0.0
+                    else:
+                        exp_beta_gap = exp(beta_gap)
+                        thermal_factor = 1.0 / max(exp_beta_gap - 1.0, 1e-12)
+                        expected_ratio = exp(-beta_gap)
+                emission_rate = environment_coupling * spectral_value * (thermal_factor + 1.0)
+                absorption_rate = environment_coupling * spectral_value * thermal_factor
+                lowering = np.zeros((n_total, n_total), dtype=complex)
+                lowering[ground_index, excited_index] = 1.0
+                raising = np.zeros((n_total, n_total), dtype=complex)
+                raising[excited_index, ground_index] = 1.0
+                operators.extend((lowering, raising))
+                rates.extend((emission_rate, absorption_rate))
+                if emission_rate > 1e-15:
+                    detailed_balance_deviation = max(
+                        detailed_balance_deviation,
+                        abs(absorption_rate / emission_rate - expected_ratio),
+                    )
+                if dephasing_rate_scale > 0.0:
+                    dephasing_rates[excited_index] += (
+                        dephasing_rate_scale
+                        * environment_coupling
+                        * spectral_value
+                        * (2.0 * thermal_factor + 1.0)
+                    )
+        if dephasing_rate_scale > 0.0:
+            for state_index, rate in enumerate(dephasing_rates):
+                if rate == 0.0:
+                    continue
                 projector = np.zeros((n_total, n_total), dtype=complex)
-                projector[excited_index, excited_index] = 1.0
+                projector[state_index, state_index] = 1.0
                 operators.append(projector)
-                rates.append(dephasing_rate_scale * environment_coupling * spectral_value * (2.0 * thermal_factor + 1.0))
+                rates.append(rate)
         return tuple(operators), tuple(rates), detailed_balance_deviation
 
     def _generate_lamb_shift_hamiltonian() -> tuple[np.ndarray, tuple[float, ...]]:
