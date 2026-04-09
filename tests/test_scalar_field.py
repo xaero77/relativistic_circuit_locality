@@ -1098,6 +1098,7 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.direction_count, 14)
         self.assertEqual(result.quadrature_order, 14)
         self.assertEqual(len(result.amplitudes), 1)
+        self.assertEqual(len(result.angular_error_estimate), 1)
 
     def test_lebedev_26_more_directions_than_14(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
@@ -1125,6 +1126,7 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(r194.direction_count, 194)
         self.assertGreater(r194.direction_count, r110.direction_count)
         self.assertGreater(r110.direction_count, r50.direction_count)
+        self.assertGreaterEqual(r194.angular_error_estimate[0], 0.0)
 
     def test_lebedev_invalid_higher_order_is_rejected(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
@@ -1641,6 +1643,8 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertEqual(result.spatial_dimension, 1)
         self.assertEqual(result.substeps_per_interval, (1, 1, 1))
         self.assertAlmostEqual(result.effective_time_step, 0.5)
+        self.assertEqual(result.local_error_estimates, (0.0, 0.0, 0.0))
+        self.assertEqual(result.time_error_tolerance, 0.0)
 
     def test_finite_difference_kg_periodic_boundary(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
@@ -1686,6 +1690,29 @@ class ScalarFieldTests(unittest.TestCase):
         self.assertGreater(result.courant_number, 0.9)
         self.assertGreater(result.substeps_per_interval[0], 1)
         self.assertLess(result.effective_time_step, 2.0)
+
+    def test_finite_difference_kg_local_error_control_refines_substeps(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        uncontrolled = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 1.5),
+            spatial_points=((-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary="reflecting",
+            max_courant=2.0,
+        )
+        controlled = solve_finite_difference_kg(
+            source,
+            time_slices=(0.0, 1.5),
+            spatial_points=((-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary="reflecting",
+            max_courant=2.0,
+            time_error_tolerance=1e-3,
+        )
+        self.assertGreaterEqual(controlled.substeps_per_interval[0], uncontrolled.substeps_per_interval[0])
+        self.assertGreater(controlled.local_error_estimates[0], 0.0)
+        self.assertEqual(controlled.time_error_tolerance, 1e-3)
 
     def test_finite_difference_kg_reflecting_boundary(self) -> None:
         source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])

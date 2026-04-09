@@ -201,8 +201,8 @@
 
 ### 수치 알고리즘 한계
 
-- **Lebedev quadrature 제한 (대부분 해소, exact 고차 table 은 아님)**: `compute_lebedev_displacement_amplitudes`가 기존의 tabulated `6/14/26`-point Lebedev rule 은 그대로 유지하면서, 추가로 `50/110/194` 방향의 결정론적 quasi-uniform spherical rule 도 지원한다. 따라서 저차 angular 평균을 넘어 더 촘촘한 구면 방향 샘플링으로 displacement amplitude 의 angular convergence 를 점검할 수 있다. 다만 canonical 고차 Lebedev table 자체를 모두 내장한 것은 아니므로, 완전한 다항 정확도 보장이 필요한 경우에는 향후 정확한 tabulated rule 확장이 더 필요하다.
-- ~~유한차분 안정성~~ → `solve_finite_difference_kg`가 구간별 Courant 수를 계산해 필요한 만큼 leapfrog substep 수를 자동 선택한다. 사용자는 coarse `time_slices`를 유지한 채 안정한 내부 `effective_time_step`과 `substeps_per_interval` 정보를 결과에서 확인할 수 있다. 다만 완전한 local error control 기반의 비균일 적응 시간적분은 아직 없다.
+- **Lebedev quadrature 제한 (추가 개선, exact 고차 table 은 아님)**: `compute_lebedev_displacement_amplitudes`가 기존의 tabulated `6/14/26`-point Lebedev rule 은 그대로 유지하면서, 추가로 `50/110/194` 방향의 결정론적 quasi-uniform spherical rule 도 지원한다. 또한 가장 가까운 더 낮은 차수 rule 과의 차이를 `angular_error_estimate`로 함께 반환해, 단순히 direction count 를 늘리는 데서 멈추지 않고 angular convergence 를 바로 진단할 수 있다. 다만 canonical 고차 Lebedev table 자체를 모두 내장한 것은 아니므로, 완전한 다항 정확도 보장이 필요한 경우에는 향후 정확한 tabulated rule 확장이 더 필요하다.
+- ~~유한차분 안정성~~ → `solve_finite_difference_kg`가 구간별 Courant 수를 계산해 필요한 만큼 leapfrog substep 수를 자동 선택할 뿐 아니라, `time_error_tolerance`가 주어지면 각 coarse interval 에 대해 `N` substep 적분과 `2N` substep 적분을 비교하는 local error estimate 를 계산해 허용오차 이하가 될 때까지, 또는 `max_time_substeps` 상한에 도달할 때까지 substep 수를 재적응시킨다. 결과의 `local_error_estimates`, `time_error_tolerance`, `effective_time_step`, `substeps_per_interval`로 안정성과 정확도 제어가 실제로 어떻게 선택되었는지 추적할 수 있다.
 
 ## 사용 방법
 

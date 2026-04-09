@@ -733,6 +733,8 @@ class FiniteDifferencePdeResult:
     remeshing_metric: tuple[tuple[float, float, float], ...]
     cell_volume_fractions: tuple[float, ...]
     face_apertures: tuple[tuple[float, ...], ...]
+    local_error_estimates: tuple[float, ...]
+    time_error_tolerance: float
 
 
 @dataclass(frozen=True)
@@ -754,6 +756,7 @@ class LebedevQuadratureResult:
     amplitudes: tuple[complex, ...]
     quadrature_order: int
     direction_count: int
+    angular_error_estimate: tuple[float, ...]
 
 
 WidthSpec = float | tuple[float, ...]
@@ -6234,6 +6237,14 @@ def _required_substeps(interval_dt: float, courant_scale: float, max_courant: fl
     return max(1, int(ceil(target)))
 
 
+def _max_slice_difference(left: tuple[float, ...], right: tuple[float, ...]) -> float:
+    if len(left) != len(right):
+        raise ValueError("Compared field slices must have the same size.")
+    if not left:
+        return 0.0
+    return max(abs(a - b) for a, b in zip(left, right))
+
+
 def solve_finite_difference_kg(
     source: BranchPath,
     *,
@@ -6248,6 +6259,8 @@ def solve_finite_difference_kg(
     adaptive_mesh_radius_factor: float = 1.25,
     remeshing_metric: MetricTensor | None = None,
     boundary_level_set: Callable[[Vector3], float] | None = None,
+    time_error_tolerance: float = 0.0,
+    max_time_substeps: int = 4096,
 ) -> FiniteDifferencePdeResult:
     """유한차분 leapfrog 방법으로 Klein-Gordon 방정식을 직접 적분한다.
 
@@ -6266,6 +6279,10 @@ def solve_finite_difference_kg(
         raise ValueError("adaptive_mesh_refinement_rounds must be non-negative.")
     if adaptive_mesh_radius_factor <= 0.0:
         raise ValueError("adaptive_mesh_radius_factor must be positive.")
+    if time_error_tolerance < 0.0:
+        raise ValueError("time_error_tolerance must be non-negative.")
+    if max_time_substeps <= 0:
+        raise ValueError("max_time_substeps must be positive.")
     metric = _normalize_metric_tensor(remeshing_metric)
 
     spatial_points = _adaptive_refine_spatial_points(
@@ -6300,46 +6317,106 @@ def solve_finite_difference_kg(
                 distance = _norm(_sub(spatial_points[j], source.position_at(time_slices[0])))
                 phi_curr[j] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
 
+        def _step_1d(
+            phi_prev_local: tuple[float, ...],
+            phi_curr_local: tuple[float, ...],
+            sample_time: float,
+            sub_dt: float,
+        ) -> tuple[float, ...]:
+            phi_next_local = [0.0] * n_space
+            phi_curr_list = list(phi_curr_local)
+            for j in range(n_space):
+                if not active_mask[j]:
+                    phi_next_local[j] = 0.0
+                    continue
+                laplacian = _laplacian_1d(
+                    phi_curr_list,
+                    j,
+                    dx=dx,
+                    boundary=boundary,
+                    stencil_order=stencil_order,
+                )
+                source_density = _source_density_at_point(source, sample_time, spatial_points[j])
+                phi_next_local[j] = (
+                    2.0 * phi_curr_local[j]
+                    - phi_prev_local[j]
+                    + sub_dt * sub_dt * (c2 * laplacian - m2 * phi_curr_local[j] + source_density)
+                )
+            if boundary == "absorbing" and n_space >= 2:
+                phi_next_local[0] = phi_curr_local[0] + light_speed * sub_dt * (phi_curr_local[1] - phi_curr_local[0]) / dx
+                phi_next_local[-1] = phi_curr_local[-1] - light_speed * sub_dt * (phi_curr_local[-1] - phi_curr_local[-2]) / dx
+            for j, is_active in enumerate(active_mask):
+                if not is_active:
+                    phi_next_local[j] = 0.0
+            return tuple(phi_next_local)
+
+        def _integrate_interval_1d(
+            phi_prev_start: tuple[float, ...],
+            phi_curr_start: tuple[float, ...],
+            interval_start: float,
+            current_dt: float,
+            substeps: int,
+        ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+            prev_state = phi_prev_start
+            curr_state = phi_curr_start
+            sub_dt = current_dt / float(substeps)
+            for substep in range(substeps):
+                sample_time = interval_start + (substep + 1) * sub_dt
+                next_state = _step_1d(prev_state, curr_state, sample_time, sub_dt)
+                prev_state = curr_state
+                curr_state = next_state
+            return prev_state, curr_state
+
         all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
         substeps_per_interval: list[int] = []
+        local_error_estimates: list[float] = []
         effective_dt_min = inf
         for ti in range(1, len(time_slices)):
             current_dt = time_slices[ti] - time_slices[ti - 1]
             substeps = _required_substeps(current_dt, courant_scale, max_courant)
+            interval_start = time_slices[ti - 1]
+            accepted_error = 0.0
+            phi_prev_tuple = tuple(phi_prev)
+            phi_curr_tuple = tuple(phi_curr)
+            if time_error_tolerance > 0.0:
+                while True:
+                    coarse_prev, coarse_curr = _integrate_interval_1d(
+                        phi_prev_tuple,
+                        phi_curr_tuple,
+                        interval_start,
+                        current_dt,
+                        substeps,
+                    )
+                    refined_substeps = min(substeps * 2, max_time_substeps)
+                    fine_prev, fine_curr = _integrate_interval_1d(
+                        phi_prev_tuple,
+                        phi_curr_tuple,
+                        interval_start,
+                        current_dt,
+                        refined_substeps,
+                    )
+                    accepted_error = _max_slice_difference(coarse_curr, fine_curr)
+                    if accepted_error <= time_error_tolerance or refined_substeps == substeps or refined_substeps >= max_time_substeps:
+                        substeps = refined_substeps
+                        phi_prev = list(fine_prev)
+                        phi_curr = list(fine_curr)
+                        break
+                    substeps = refined_substeps
+            else:
+                accepted_error = 0.0
+                phi_prev_tuple, phi_curr_tuple = _integrate_interval_1d(
+                    phi_prev_tuple,
+                    phi_curr_tuple,
+                    interval_start,
+                    current_dt,
+                    substeps,
+                )
+                phi_prev = list(phi_prev_tuple)
+                phi_curr = list(phi_curr_tuple)
             substeps_per_interval.append(substeps)
             sub_dt = current_dt / substeps
+            local_error_estimates.append(accepted_error)
             effective_dt_min = min(effective_dt_min, sub_dt)
-            interval_start = time_slices[ti - 1]
-            for substep in range(substeps):
-                sample_time = interval_start + (substep + 1) * sub_dt
-                phi_next = [0.0] * n_space
-                for j in range(n_space):
-                    if not active_mask[j]:
-                        phi_next[j] = 0.0
-                        continue
-                    laplacian = _laplacian_1d(
-                        phi_curr,
-                        j,
-                        dx=dx,
-                        boundary=boundary,
-                        stencil_order=stencil_order,
-                    )
-                    source_density = _source_density_at_point(source, sample_time, spatial_points[j])
-                    phi_next[j] = (
-                        2.0 * phi_curr[j]
-                        - phi_prev[j]
-                        + sub_dt * sub_dt * (c2 * laplacian - m2 * phi_curr[j] + source_density)
-                    )
-
-                if boundary == "absorbing" and n_space >= 2:
-                    phi_next[0] = phi_curr[0] + light_speed * sub_dt * (phi_curr[1] - phi_curr[0]) / dx
-                    phi_next[-1] = phi_curr[-1] - light_speed * sub_dt * (phi_curr[-1] - phi_curr[-2]) / dx
-                for j, is_active in enumerate(active_mask):
-                    if not is_active:
-                        phi_next[j] = 0.0
-
-                phi_prev = list(phi_curr)
-                phi_curr = phi_next
             all_slices.append(tuple(phi_curr))
         return FiniteDifferencePdeResult(
             field_values=tuple(all_slices),
@@ -6357,6 +6434,8 @@ def solve_finite_difference_kg(
             remeshing_metric=metric,
             cell_volume_fractions=cell_volume_fractions,
             face_apertures=face_apertures,
+            local_error_estimates=tuple(local_error_estimates),
+            time_error_tolerance=time_error_tolerance,
         )
 
     xs, ys, zs, mapping = cartesian
@@ -6390,177 +6469,238 @@ def solve_finite_difference_kg(
             distance = _norm(_sub(point, source.position_at(time_slices[0])))
             phi_curr[flat_index] = source.charge * _yukawa_kernel(distance, mass, 1e-9)
 
+    def _step_cartesian(
+        phi_prev_local: tuple[float, ...],
+        phi_curr_local: tuple[float, ...],
+        sample_time: float,
+        sub_dt: float,
+    ) -> tuple[float, ...]:
+        phi_next_local = [0.0] * n_space
+        phi_curr_list = list(phi_curr_local)
+        for (ix, iy, iz), flat_index in mapping.items():
+            if not active_mask[flat_index]:
+                phi_next_local[flat_index] = 0.0
+                continue
+            laplacian = 0.0
+            for axis, spacing in enumerate(axis_spacings):
+                if spacing is None:
+                    continue
+                current_index = (ix, iy, iz)
+                use_cut_cell_flux = boundary_level_set is not None
+                if use_cut_cell_flux:
+                    volume_fraction = max(cell_volume_fractions[flat_index], 1e-6)
+                    face_minus = face_apertures[flat_index][2 * axis]
+                    face_plus = face_apertures[flat_index][2 * axis + 1]
+                    minus_index = [ix, iy, iz]
+                    plus_index = [ix, iy, iz]
+                    minus_index[axis] -= 1
+                    plus_index[axis] += 1
+                    minus_tuple = (minus_index[0], minus_index[1], minus_index[2])
+                    plus_tuple = (plus_index[0], plus_index[1], plus_index[2])
+
+                    if minus_tuple in mapping:
+                        minus_flat = mapping[minus_tuple]
+                        if active_mask[minus_flat]:
+                            minus_value = phi_curr_local[minus_flat]
+                            minus_distance = spacing
+                        else:
+                            minus_value = 0.0
+                            minus_distance = spacing * max(_cut_fraction(level_set_values[flat_index], level_set_values[minus_flat]), 1e-6)
+                    else:
+                        minus_value = _finite_difference_boundary_value(
+                            phi_curr_list,
+                            current_index,
+                            minus_tuple,
+                            axis=axis,
+                            direction=-1,
+                            dims=dims,
+                            boundary=boundary,
+                        )
+                        minus_distance = spacing
+
+                    if plus_tuple in mapping:
+                        plus_flat = mapping[plus_tuple]
+                        if active_mask[plus_flat]:
+                            plus_value = phi_curr_local[plus_flat]
+                            plus_distance = spacing
+                        else:
+                            plus_value = 0.0
+                            plus_distance = spacing * max(_cut_fraction(level_set_values[flat_index], level_set_values[plus_flat]), 1e-6)
+                    else:
+                        plus_value = _finite_difference_boundary_value(
+                            phi_curr_list,
+                            current_index,
+                            plus_tuple,
+                            axis=axis,
+                            direction=1,
+                            dims=dims,
+                            boundary=boundary,
+                        )
+                        plus_distance = spacing
+
+                    flux_plus = face_plus * (plus_value - phi_curr_local[flat_index]) / plus_distance
+                    flux_minus = face_minus * (phi_curr_local[flat_index] - minus_value) / minus_distance
+                    laplacian += (flux_plus - flux_minus) / (volume_fraction * spacing)
+                elif stencil_order >= 4 and dims[axis] >= 5:
+                    stencil_sum = 0.0
+                    for offset, coefficient in ((-2, -1.0), (-1, 16.0), (0, -30.0), (1, 16.0), (2, -1.0)):
+                        if offset == 0:
+                            value = phi_curr_local[flat_index]
+                        else:
+                            neighbor = [ix, iy, iz]
+                            neighbor[axis] += offset
+                            neighbor_tuple = (neighbor[0], neighbor[1], neighbor[2])
+                            if neighbor_tuple in mapping:
+                                neighbor_flat = mapping[neighbor_tuple]
+                                value = phi_curr_local[neighbor_flat] if active_mask[neighbor_flat] else 0.0
+                            else:
+                                value = _finite_difference_boundary_value(
+                                    phi_curr_list,
+                                    current_index,
+                                    neighbor_tuple,
+                                    axis=axis,
+                                    direction=1 if offset > 0 else -1,
+                                    dims=dims,
+                                    boundary=boundary,
+                                )
+                        stencil_sum += coefficient * value
+                    laplacian += stencil_sum / (12.0 * spacing * spacing)
+                else:
+                    minus_index = [ix, iy, iz]
+                    plus_index = [ix, iy, iz]
+                    minus_index[axis] -= 1
+                    plus_index[axis] += 1
+                    minus_tuple = (minus_index[0], minus_index[1], minus_index[2])
+                    plus_tuple = (plus_index[0], plus_index[1], plus_index[2])
+                    if minus_tuple in mapping:
+                        minus_flat = mapping[minus_tuple]
+                        minus_value = phi_curr_local[minus_flat] if active_mask[minus_flat] else 0.0
+                    else:
+                        minus_value = _finite_difference_boundary_value(
+                            phi_curr_list,
+                            current_index,
+                            minus_tuple,
+                            axis=axis,
+                            direction=-1,
+                            dims=dims,
+                            boundary=boundary,
+                        )
+                    if plus_tuple in mapping:
+                        plus_flat = mapping[plus_tuple]
+                        plus_value = phi_curr_local[plus_flat] if active_mask[plus_flat] else 0.0
+                    else:
+                        plus_value = _finite_difference_boundary_value(
+                            phi_curr_list,
+                            current_index,
+                            plus_tuple,
+                            axis=axis,
+                            direction=1,
+                            dims=dims,
+                            boundary=boundary,
+                        )
+                    laplacian += (plus_value - 2.0 * phi_curr_local[flat_index] + minus_value) / (spacing * spacing)
+            source_density = _source_density_at_point(source, sample_time, spatial_points[flat_index])
+            phi_next_local[flat_index] = (
+                2.0 * phi_curr_local[flat_index]
+                - phi_prev_local[flat_index]
+                + sub_dt * sub_dt * (c2 * laplacian - m2 * phi_curr_local[flat_index] + source_density)
+            )
+
+        if boundary == "absorbing":
+            for (ix, iy, iz), flat_index in mapping.items():
+                if not active_mask[flat_index]:
+                    phi_next_local[flat_index] = 0.0
+                    continue
+                correction = 0.0
+                correction_count = 0
+                for axis, spacing in enumerate(axis_spacings):
+                    if spacing is None:
+                        continue
+                    coordinate = (ix, iy, iz)[axis]
+                    if coordinate not in {0, dims[axis] - 1}:
+                        continue
+                    inward = [ix, iy, iz]
+                    inward[axis] = 1 if coordinate == 0 else dims[axis] - 2
+                    inward_flat = inward[0] + dims[0] * (inward[1] + dims[1] * inward[2])
+                    outward_sign = 1.0 if coordinate == 0 else -1.0
+                    correction += phi_curr_local[flat_index] + outward_sign * light_speed * sub_dt * (
+                        phi_curr_local[inward_flat] - phi_curr_local[flat_index]
+                    ) / spacing
+                    correction_count += 1
+                if correction_count > 0:
+                    phi_next_local[flat_index] = correction / correction_count
+        for flat_index, is_active in enumerate(active_mask):
+            if not is_active:
+                phi_next_local[flat_index] = 0.0
+        return tuple(phi_next_local)
+
+    def _integrate_interval_cartesian(
+        phi_prev_start: tuple[float, ...],
+        phi_curr_start: tuple[float, ...],
+        interval_start: float,
+        current_dt: float,
+        substeps: int,
+    ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        prev_state = phi_prev_start
+        curr_state = phi_curr_start
+        sub_dt = current_dt / float(substeps)
+        for substep in range(substeps):
+            sample_time = interval_start + (substep + 1) * sub_dt
+            next_state = _step_cartesian(prev_state, curr_state, sample_time, sub_dt)
+            prev_state = curr_state
+            curr_state = next_state
+        return prev_state, curr_state
+
     all_slices: list[tuple[float, ...]] = [tuple(phi_curr)]
     substeps_per_interval: list[int] = []
+    local_error_estimates: list[float] = []
     effective_dt_min = inf
     for ti in range(1, len(time_slices)):
         current_dt = time_slices[ti] - time_slices[ti - 1]
         substeps = _required_substeps(current_dt, courant_scale, max_courant)
+        interval_start = time_slices[ti - 1]
+        accepted_error = 0.0
+        phi_prev_tuple = tuple(phi_prev)
+        phi_curr_tuple = tuple(phi_curr)
+        if time_error_tolerance > 0.0:
+            while True:
+                _, coarse_curr = _integrate_interval_cartesian(
+                    phi_prev_tuple,
+                    phi_curr_tuple,
+                    interval_start,
+                    current_dt,
+                    substeps,
+                )
+                refined_substeps = min(substeps * 2, max_time_substeps)
+                fine_prev, fine_curr = _integrate_interval_cartesian(
+                    phi_prev_tuple,
+                    phi_curr_tuple,
+                    interval_start,
+                    current_dt,
+                    refined_substeps,
+                )
+                accepted_error = _max_slice_difference(coarse_curr, fine_curr)
+                if accepted_error <= time_error_tolerance or refined_substeps == substeps or refined_substeps >= max_time_substeps:
+                    substeps = refined_substeps
+                    phi_prev = list(fine_prev)
+                    phi_curr = list(fine_curr)
+                    break
+                substeps = refined_substeps
+        else:
+            accepted_error = 0.0
+            phi_prev_tuple, phi_curr_tuple = _integrate_interval_cartesian(
+                phi_prev_tuple,
+                phi_curr_tuple,
+                interval_start,
+                current_dt,
+                substeps,
+            )
+            phi_prev = list(phi_prev_tuple)
+            phi_curr = list(phi_curr_tuple)
         substeps_per_interval.append(substeps)
         sub_dt = current_dt / substeps
+        local_error_estimates.append(accepted_error)
         effective_dt_min = min(effective_dt_min, sub_dt)
-        interval_start = time_slices[ti - 1]
-        for substep in range(substeps):
-            sample_time = interval_start + (substep + 1) * sub_dt
-            phi_next = [0.0] * n_space
-            for (ix, iy, iz), flat_index in mapping.items():
-                if not active_mask[flat_index]:
-                    phi_next[flat_index] = 0.0
-                    continue
-                laplacian = 0.0
-                for axis, spacing in enumerate(axis_spacings):
-                    if spacing is None:
-                        continue
-                    current_index = (ix, iy, iz)
-                    use_cut_cell_flux = boundary_level_set is not None
-                    if use_cut_cell_flux:
-                        volume_fraction = max(cell_volume_fractions[flat_index], 1e-6)
-                        face_minus = face_apertures[flat_index][2 * axis]
-                        face_plus = face_apertures[flat_index][2 * axis + 1]
-                        minus_index = [ix, iy, iz]
-                        plus_index = [ix, iy, iz]
-                        minus_index[axis] -= 1
-                        plus_index[axis] += 1
-                        minus_tuple = (minus_index[0], minus_index[1], minus_index[2])
-                        plus_tuple = (plus_index[0], plus_index[1], plus_index[2])
-
-                        if minus_tuple in mapping:
-                            minus_flat = mapping[minus_tuple]
-                            if active_mask[minus_flat]:
-                                minus_value = phi_curr[minus_flat]
-                                minus_distance = spacing
-                            else:
-                                minus_value = 0.0
-                                minus_distance = spacing * max(_cut_fraction(level_set_values[flat_index], level_set_values[minus_flat]), 1e-6)
-                        else:
-                            minus_value = _finite_difference_boundary_value(
-                                phi_curr,
-                                current_index,
-                                minus_tuple,
-                                axis=axis,
-                                direction=-1,
-                                dims=dims,
-                                boundary=boundary,
-                            )
-                            minus_distance = spacing
-
-                        if plus_tuple in mapping:
-                            plus_flat = mapping[plus_tuple]
-                            if active_mask[plus_flat]:
-                                plus_value = phi_curr[plus_flat]
-                                plus_distance = spacing
-                            else:
-                                plus_value = 0.0
-                                plus_distance = spacing * max(_cut_fraction(level_set_values[flat_index], level_set_values[plus_flat]), 1e-6)
-                        else:
-                            plus_value = _finite_difference_boundary_value(
-                                phi_curr,
-                                current_index,
-                                plus_tuple,
-                                axis=axis,
-                                direction=1,
-                                dims=dims,
-                                boundary=boundary,
-                            )
-                            plus_distance = spacing
-
-                        flux_plus = face_plus * (plus_value - phi_curr[flat_index]) / plus_distance
-                        flux_minus = face_minus * (phi_curr[flat_index] - minus_value) / minus_distance
-                        laplacian += (flux_plus - flux_minus) / (volume_fraction * spacing)
-                    elif stencil_order >= 4 and dims[axis] >= 5:
-                        stencil_sum = 0.0
-                        for offset, coefficient in ((-2, -1.0), (-1, 16.0), (0, -30.0), (1, 16.0), (2, -1.0)):
-                            if offset == 0:
-                                value = phi_curr[flat_index]
-                            else:
-                                neighbor = [ix, iy, iz]
-                                neighbor[axis] += offset
-                                neighbor_tuple = (neighbor[0], neighbor[1], neighbor[2])
-                                if neighbor_tuple in mapping:
-                                    neighbor_flat = mapping[neighbor_tuple]
-                                    value = phi_curr[neighbor_flat] if active_mask[neighbor_flat] else 0.0
-                                else:
-                                    value = _finite_difference_boundary_value(
-                                        phi_curr,
-                                        current_index,
-                                        neighbor_tuple,
-                                        axis=axis,
-                                        direction=1 if offset > 0 else -1,
-                                        dims=dims,
-                                        boundary=boundary,
-                                    )
-                            stencil_sum += coefficient * value
-                        laplacian += stencil_sum / (12.0 * spacing * spacing)
-                    else:
-                        minus_index = [ix, iy, iz]
-                        plus_index = [ix, iy, iz]
-                        minus_index[axis] -= 1
-                        plus_index[axis] += 1
-                        minus_tuple = (minus_index[0], minus_index[1], minus_index[2])
-                        plus_tuple = (plus_index[0], plus_index[1], plus_index[2])
-                        if minus_tuple in mapping:
-                            minus_flat = mapping[minus_tuple]
-                            minus_value = phi_curr[minus_flat] if active_mask[minus_flat] else 0.0
-                        else:
-                            minus_value = _finite_difference_boundary_value(
-                                phi_curr,
-                                current_index,
-                                minus_tuple,
-                                axis=axis,
-                                direction=-1,
-                                dims=dims,
-                                boundary=boundary,
-                            )
-                        if plus_tuple in mapping:
-                            plus_flat = mapping[plus_tuple]
-                            plus_value = phi_curr[plus_flat] if active_mask[plus_flat] else 0.0
-                        else:
-                            plus_value = _finite_difference_boundary_value(
-                                phi_curr,
-                                current_index,
-                                plus_tuple,
-                                axis=axis,
-                                direction=1,
-                                dims=dims,
-                                boundary=boundary,
-                            )
-                        laplacian += (plus_value - 2.0 * phi_curr[flat_index] + minus_value) / (spacing * spacing)
-                source_density = _source_density_at_point(source, sample_time, spatial_points[flat_index])
-                phi_next[flat_index] = (
-                    2.0 * phi_curr[flat_index]
-                    - phi_prev[flat_index]
-                    + sub_dt * sub_dt * (c2 * laplacian - m2 * phi_curr[flat_index] + source_density)
-                )
-
-            if boundary == "absorbing":
-                for (ix, iy, iz), flat_index in mapping.items():
-                    if not active_mask[flat_index]:
-                        phi_next[flat_index] = 0.0
-                        continue
-                    correction = 0.0
-                    correction_count = 0
-                    for axis, spacing in enumerate(axis_spacings):
-                        if spacing is None:
-                            continue
-                        coordinate = (ix, iy, iz)[axis]
-                        if coordinate not in {0, dims[axis] - 1}:
-                            continue
-                        inward = [ix, iy, iz]
-                        inward[axis] = 1 if coordinate == 0 else dims[axis] - 2
-                        inward_flat = inward[0] + dims[0] * (inward[1] + dims[1] * inward[2])
-                        outward_sign = 1.0 if coordinate == 0 else -1.0
-                        correction += phi_curr[flat_index] + outward_sign * light_speed * sub_dt * (
-                            phi_curr[inward_flat] - phi_curr[flat_index]
-                        ) / spacing
-                        correction_count += 1
-                    if correction_count > 0:
-                        phi_next[flat_index] = correction / correction_count
-            for flat_index, is_active in enumerate(active_mask):
-                if not is_active:
-                    phi_next[flat_index] = 0.0
-
-            phi_prev = list(phi_curr)
-            phi_curr = phi_next
         all_slices.append(tuple(phi_curr))
 
     return FiniteDifferencePdeResult(
@@ -6579,6 +6719,8 @@ def solve_finite_difference_kg(
         remeshing_metric=metric,
         cell_volume_fractions=cell_volume_fractions,
         face_apertures=face_apertures,
+        local_error_estimates=tuple(local_error_estimates),
+        time_error_tolerance=time_error_tolerance,
     )
 
 
@@ -6670,34 +6812,50 @@ def compute_lebedev_displacement_amplitudes(
     if momentum_cutoff <= 0.0:
         raise ValueError("momentum_cutoff must be positive.")
     directions, weights = _resolve_lebedev_rule(lebedev_order)
-
     radial_nodes, radial_weights = _gauss_legendre_rule(radial_quadrature_order)
-    amplitudes: list[complex] = []
-    for branch_idx, branch_item in enumerate(branches):
-        total = 0.0j
-        midpoint = momentum_cutoff / 2.0
-        half_width = momentum_cutoff / 2.0
-        for radial_node, radial_weight in zip(radial_nodes, radial_weights):
-            momentum_radius = midpoint + half_width * radial_node
-            angular_total = 0.0j
-            for direction, leb_weight in zip(directions, weights):
-                momentum = _scale(direction, momentum_radius)
-                omega = _mode_energy(momentum, field_mass)
-                contribution = (-1j / sqrt(2.0 * omega)) * _branch_time_integral(
-                    branch_item,
-                    lambda sample_time, mode=momentum, frequency=omega: (
-                        complex_exp(1j * frequency * sample_time)
-                        * _source_form_factor(branch_item, mode, sample_time, source_width)
-                    ),
-                    quadrature_order=time_quadrature_order,
-                )
-                angular_total += leb_weight * contribution
-            total += radial_weight * (momentum_radius * momentum_radius) * angular_total
-        amplitudes.append(4.0 * pi * total * half_width)
+
+    def _compute_amplitudes_for_rule(
+        active_directions: tuple[Vector3, ...],
+        active_weights: tuple[float, ...],
+    ) -> tuple[complex, ...]:
+        amplitudes_local: list[complex] = []
+        for branch_item in branches:
+            total = 0.0j
+            midpoint = momentum_cutoff / 2.0
+            half_width = momentum_cutoff / 2.0
+            for radial_node, radial_weight in zip(radial_nodes, radial_weights):
+                momentum_radius = midpoint + half_width * radial_node
+                angular_total = 0.0j
+                for direction, leb_weight in zip(active_directions, active_weights):
+                    momentum = _scale(direction, momentum_radius)
+                    omega = _mode_energy(momentum, field_mass)
+                    contribution = (-1j / sqrt(2.0 * omega)) * _branch_time_integral(
+                        branch_item,
+                        lambda sample_time, mode=momentum, frequency=omega: (
+                            complex_exp(1j * frequency * sample_time)
+                            * _source_form_factor(branch_item, mode, sample_time, source_width)
+                        ),
+                        quadrature_order=time_quadrature_order,
+                    )
+                    angular_total += leb_weight * contribution
+                total += radial_weight * (momentum_radius * momentum_radius) * angular_total
+            amplitudes_local.append(4.0 * pi * total * half_width)
+        return tuple(amplitudes_local)
+
+    amplitudes = _compute_amplitudes_for_rule(directions, weights)
+    lower_orders = tuple(order for order in _SUPPORTED_LEBEDEV_ORDERS if order < lebedev_order)
+    if lower_orders:
+        reference_order = lower_orders[-1]
+        reference_directions, reference_weights = _resolve_lebedev_rule(reference_order)
+        reference_amplitudes = _compute_amplitudes_for_rule(reference_directions, reference_weights)
+        angular_error_estimate = tuple(abs(current - reference) for current, reference in zip(amplitudes, reference_amplitudes))
+    else:
+        angular_error_estimate = tuple(0.0 for _ in amplitudes)
     return LebedevQuadratureResult(
-        amplitudes=tuple(amplitudes),
+        amplitudes=amplitudes,
         quadrature_order=lebedev_order,
         direction_count=len(directions),
+        angular_error_estimate=angular_error_estimate,
     )
 
 
