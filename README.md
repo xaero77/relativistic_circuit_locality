@@ -202,6 +202,12 @@
 
 ## 빠른 실행
 
+설치 기반 실행:
+
+```bash
+python -m pip install -e .
+```
+
 예제 실행:
 
 ```bash

@@ -219,6 +219,7 @@
 ## 사용 방법
 
 ```bash
+python -m pip install -e .
 python -m relativistic_circuit_locality.examples core
 python -m relativistic_circuit_locality.examples field
 python -m relativistic_circuit_locality.examples research
