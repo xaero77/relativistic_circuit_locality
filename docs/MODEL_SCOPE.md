@@ -44,4 +44,5 @@
 
 1. `relativistic_circuit_locality` 또는 `relativistic_circuit_locality.core`에서 안정 API 를 사용한다.
 2. 추가 물리 모델이나 surrogate bundle 이 필요할 때만 `relativistic_circuit_locality.experimental`로 내려간다.
-3. 회귀 검증은 `python -m unittest discover -s tests -v`를 기준으로 수행한다.
+3. 재현 가능한 실행이 필요하면 `python -m relativistic_circuit_locality.experiments ...`로 spec 기반 batch 실행을 사용한다.
+4. 회귀 검증은 `python -m unittest discover -s tests -v`를 기준으로 수행한다.

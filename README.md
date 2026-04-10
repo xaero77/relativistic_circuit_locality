@@ -43,6 +43,13 @@ benchmark:
 python -m relativistic_circuit_locality.benchmarking
 ```
 
+reproducible batch run:
+
+```bash
+python -m relativistic_circuit_locality.experiments preset core results/core
+python -m relativistic_circuit_locality.experiments run results/core/spec.json results/rerun
+```
+
 ## 안정 API
 
 패키지 루트와 [`src/relativistic_circuit_locality/core.py`](src/relativistic_circuit_locality/core.py)는 다음 안정 진입점만 노출한다.
@@ -61,6 +68,7 @@ python -m relativistic_circuit_locality.benchmarking
 - 구현 이력과 세부 메모: [`CHAT.md`](CHAT.md)
 - 개선 과제 추적: [`IMPROVEMENTS.md`](IMPROVEMENTS.md)
 - representative benchmark: [`src/relativistic_circuit_locality/benchmarking.py`](src/relativistic_circuit_locality/benchmarking.py)
+- reproducible experiment runner: [`src/relativistic_circuit_locality/experiments.py`](src/relativistic_circuit_locality/experiments.py)
 
 ## 저장소 구조
 
@@ -70,5 +78,6 @@ python -m relativistic_circuit_locality.benchmarking
 - `src/relativistic_circuit_locality/geometry.py`: worldline/spline 기하 계층
 - `src/relativistic_circuit_locality/lebedev_tables.py`: package-data 기반 Lebedev lazy loader
 - `src/relativistic_circuit_locality/benchmarking.py`: representative benchmark/profiling helper
+- `src/relativistic_circuit_locality/experiments.py`: JSON spec, batch execution, result export
 - `src/relativistic_circuit_locality/examples/`: 시나리오별 실행 예제
 - `tests/`: 주제별로 분리된 회귀 테스트

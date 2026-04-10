@@ -130,6 +130,17 @@
 - `format_benchmark_report`
 - `profile_call`
 
+### Reproducible Experiment Pipeline
+
+- `ExperimentSpec`
+- `ExperimentReport`
+- `BatchReport`
+- `build_core_phase_preset`
+- `load_batch_specs`
+- `run_experiment`
+- `run_batch`
+- `save_batch_report`
+
 ## 예제 진입점
 
 - `python -m relativistic_circuit_locality.examples core`
