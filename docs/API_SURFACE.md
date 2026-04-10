@@ -124,6 +124,12 @@
 - `compute_running_coupling_phase_matrix`
 - `validate_symbolic_bookkeeping`
 
+### Tooling and Profiling
+
+- `benchmark_representative_workloads`
+- `format_benchmark_report`
+- `profile_call`
+
 ## 예제 진입점
 
 - `python -m relativistic_circuit_locality.examples core`

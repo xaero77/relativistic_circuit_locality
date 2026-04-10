@@ -151,10 +151,16 @@
 
 ## 우선순위 낮음
 
-### 7. 정적 검사와 스타일 자동화 추가
+### [x] 7. 정적 검사와 스타일 자동화 추가
 
 - 현재 `pyproject.toml`에는 포맷터, 린터, 타입체커 설정이 없다.
 - 이 정도 규모의 단일 수치 코드에서는 스타일 일관성과 타입 검사가 회귀 방지에 큰 도움이 된다.
+
+반영 내용:
+
+- [`pyproject.toml`](/workspaces/relativistic_circuit_locality/pyproject.toml)에 `dev` extra 로 `ruff`와 `mypy`를 추가했다.
+- 기본 lint/type-check 규칙을 `ruff`/`mypy` 설정으로 저장소에 명시했다.
+- 설치 기반 개발 흐름에서 `pip install -e .[dev]`로 정적 검사 도구를 함께 설치할 수 있게 했다.
 
 개선 방향:
 
@@ -162,19 +168,31 @@
 - 최소한 공개 API 함수와 주요 결과 타입에 대한 타입 안정성을 강화한다.
 - import 정렬, 미사용 코드, 너무 긴 함수 같은 기본 품질 규칙을 자동화한다.
 
-### 8. 대용량 테이블의 로딩 전략 개선
+### [x] 8. 대용량 테이블의 로딩 전략 개선
 
 - [`src/relativistic_circuit_locality/lebedev_tables.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/lebedev_tables.py)는 큰 문자열 테이블을 코드에 직접 포함하고 있다.
 - 지금 규모에서는 동작에 큰 문제는 없지만, import 시 메모리와 가독성 측면에서 손해가 있다.
+
+반영 내용:
+
+- Lebedev table 을 코드 내 문자열 상수 대신 [`src/relativistic_circuit_locality/data/lebedev_tables.json`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/data/lebedev_tables.json) 패키지 데이터로 분리했다.
+- [`src/relativistic_circuit_locality/lebedev_tables.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/lebedev_tables.py)는 이제 `importlib.resources`와 `lru_cache`를 사용해 필요할 때만 테이블을 로드한다.
+- [`pyproject.toml`](/workspaces/relativistic_circuit_locality/pyproject.toml)에 package-data 설정을 추가해 editable install 과 배포 모두에서 같은 데이터 경로를 사용하게 했다.
 
 개선 방향:
 
 - 테이블을 별도 데이터 파일로 분리하고 필요 시 lazy loading 한다.
 - 캐시 계층을 두어 반복 파싱 비용을 줄인다.
 
-### 9. 성능 병목 구간 계측 추가
+### [x] 9. 성능 병목 구간 계측 추가
 
 - 수치 적분, 격자 계산, surrogate 계열 함수가 많이 존재하지만 성능 병목이 어디인지 드러나는 프로파일링 훅이 없다.
+
+반영 내용:
+
+- [`src/relativistic_circuit_locality/benchmarking.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/benchmarking.py)에 representative workload benchmark 진입점을 추가했다.
+- `branch_phase_matrix`, `wavepacket_phase_matrix`, `finite_difference_kg` 세 경로를 반복 실행해 평균/최소/최대 시간을 출력하도록 했다.
+- 경량 프로파일링 훅 `profile_call`과 보고서 포맷 함수 `format_benchmark_report`를 제공해 로컬 병목 확인을 쉽게 했다.
 
 개선 방향:
 

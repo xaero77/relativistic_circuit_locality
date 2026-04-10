@@ -11,7 +11,7 @@ from typing import Callable, Literal
 import numpy as np
 
 from .geometry import BranchPath, SplineBranchPath, TrajectoryPoint, Vector3, _add, _dot, _norm, _scale, _sub
-from .lebedev_tables import LEBEDEV_SPHERICAL_TABLES
+from .lebedev_tables import get_tabulated_lebedev_orders, get_tabulated_lebedev_table
 
 
 _AXIS_DIRECTIONS: tuple[Vector3, ...] = (
@@ -57,7 +57,8 @@ _LEBEDEV_WEIGHTS_26: tuple[float, ...] = (
     + tuple(4.0 / 105.0 for _ in range(12))
     + tuple(27.0 / 840.0 for _ in range(8))
 )
-_EXACT_LEBEDEV_ORDERS: tuple[int, ...] = tuple(sorted((6, 14, 26) + tuple(LEBEDEV_SPHERICAL_TABLES)))
+_TABULATED_LEBEDEV_ORDERS_FROM_DATA: tuple[int, ...] = get_tabulated_lebedev_orders()
+_EXACT_LEBEDEV_ORDERS: tuple[int, ...] = tuple(sorted((6, 14, 26) + _TABULATED_LEBEDEV_ORDERS_FROM_DATA))
 _SUPPORTED_LEBEDEV_ORDERS: tuple[int, ...] = _EXACT_LEBEDEV_ORDERS
 _TABULATED_LEBEDEV_ORDERS: tuple[int, ...] = _EXACT_LEBEDEV_ORDERS
 _SUPPORTED_LEBEDEV_ORDER_MESSAGE = ", ".join(str(order) for order in _SUPPORTED_LEBEDEV_ORDERS)
@@ -4354,7 +4355,7 @@ def _neville_extrapolate_complex(
 
 @lru_cache(maxsize=None)
 def _load_tabulated_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float, ...]]:
-    raw_table = LEBEDEV_SPHERICAL_TABLES.get(order)
+    raw_table = get_tabulated_lebedev_table(order)
     if raw_table is None:
         raise ValueError(f"No tabulated Lebedev rule is available for order {order}.")
     directions: list[Vector3] = []
@@ -4380,7 +4381,7 @@ def _resolve_lebedev_rule(order: int) -> tuple[tuple[Vector3, ...], tuple[float,
         return _AXIS_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_14
     if order == 26:
         return _AXIS_DIRECTIONS + _EDGE_DIRECTIONS + _DIAGONAL_DIRECTIONS, _LEBEDEV_WEIGHTS_26
-    if order in LEBEDEV_SPHERICAL_TABLES:
+    if order in _TABULATED_LEBEDEV_ORDERS_FROM_DATA:
         return _load_tabulated_lebedev_rule(order)
     raise ValueError(f"lebedev_order must be one of the exact supported Lebedev orders: {_SUPPORTED_LEBEDEV_ORDER_MESSAGE}.")
 

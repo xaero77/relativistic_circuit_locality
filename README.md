@@ -13,6 +13,7 @@
 - finite-width wavepacket phase 와 sampled field decomposition
 - lattice/backreaction surrogate 와 research-grade closure 묶음
 - 설치 기반 실행과 주제별 예제, 분리된 회귀 테스트
+- lazy-loaded Lebedev table, dev tooling 설정, representative benchmark 진입점
 
 ## 빠른 시작
 
@@ -36,6 +37,12 @@ python -m relativistic_circuit_locality.examples research
 python -m unittest discover -s tests -v
 ```
 
+benchmark:
+
+```bash
+python -m relativistic_circuit_locality.benchmarking
+```
+
 ## 안정 API
 
 패키지 루트와 [`src/relativistic_circuit_locality/core.py`](src/relativistic_circuit_locality/core.py)는 다음 안정 진입점만 노출한다.
@@ -53,6 +60,7 @@ python -m unittest discover -s tests -v
 - 구현 범위, surrogate 수준, 한계: [`docs/MODEL_SCOPE.md`](docs/MODEL_SCOPE.md)
 - 구현 이력과 세부 메모: [`CHAT.md`](CHAT.md)
 - 개선 과제 추적: [`IMPROVEMENTS.md`](IMPROVEMENTS.md)
+- representative benchmark: [`src/relativistic_circuit_locality/benchmarking.py`](src/relativistic_circuit_locality/benchmarking.py)
 
 ## 저장소 구조
 
@@ -60,5 +68,7 @@ python -m unittest discover -s tests -v
 - `src/relativistic_circuit_locality/experimental.py`: 확장 및 연구형 API namespace
 - `src/relativistic_circuit_locality/scalar_field.py`: 핵심 수치 모델 구현
 - `src/relativistic_circuit_locality/geometry.py`: worldline/spline 기하 계층
+- `src/relativistic_circuit_locality/lebedev_tables.py`: package-data 기반 Lebedev lazy loader
+- `src/relativistic_circuit_locality/benchmarking.py`: representative benchmark/profiling helper
 - `src/relativistic_circuit_locality/examples/`: 시나리오별 실행 예제
 - `tests/`: 주제별로 분리된 회귀 테스트

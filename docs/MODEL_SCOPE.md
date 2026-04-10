@@ -37,8 +37,8 @@
 
 - 많은 고급 기능이 surrogate 모델이므로 exact QFT 해석과 동일하지 않다.
 - `scalar_field.py`는 여전히 저장소에서 가장 큰 구현 모듈이며, 추가 책임 분리는 계속 가능한 상태다.
-- 대용량 Lebedev table 은 아직 코드 내장형이며 lazy-loading 구조가 아니다.
-- 정적 분석, lint, benchmark 자동화는 아직 도입하지 않았다.
+- Lebedev table 은 lazy-loading 으로 옮겼지만 데이터 파일 자체는 여전히 저장소에 vendor 된다.
+- `ruff`/`mypy` 설정과 benchmark 진입점은 추가했지만, 자동 CI 파이프라인은 아직 없다.
 
 ## 권장 사용 방식
 
