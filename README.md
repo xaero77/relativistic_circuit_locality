@@ -1,7 +1,7 @@
 # relativistic_circuit_locality
 
 `q-2026-03-24-2046.pdf`
-("Circuit locality from relativistic locality in scalar field mediated entanglement", arXiv:2305.05645v4)
+("Circuit locality from relativistic locality in scalar field mediated entanglement (스칼라장 매개 얽힘에서 상대론적 국소성에 기반한 회로 국소성)", arXiv:2305.05645v4)
 논문의 핵심 아이디어를 Python으로 옮긴 참조 구현이다.
 
 이 저장소는 완전한 QFT 시뮬레이터가 아니라, 논문에서 직접 계산 가능한 핵심 구성요소를 설치 가능한 `src/` 레이아웃 패키지로 정리한 참조 모델이다. 기본 진입점은 안정 API와 시나리오별 예제에 집중하고, 연구형 surrogate 및 상세 기능 목록은 별도 문서로 분리했다.
