@@ -1,0 +1,961 @@
+from _shared import *
+
+
+class CoreLocalityTests(unittest.TestCase):
+    def test_package_root_exposes_only_core_api(self) -> None:
+        self.assertIs(package_api.BranchPath, BranchPath)
+        self.assertTrue(hasattr(package_api, "experimental"))
+        self.assertFalse(hasattr(package_api, "close_current_limitations"))
+        self.assertIs(package_api.experimental.close_current_limitations, close_current_limitations)
+
+    def test_closest_approach_tracks_minimum_distance(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (1.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (3.0, 0.0, 0.0)), (1.0, (1.5, 0.0, 0.0))])
+        self.assertAlmostEqual(compute_closest_approach(left, right), 2.5)
+
+    def test_closest_approach_uses_continuous_segment_minimum_with_mismatched_sampling(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (1.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])
+        self.assertAlmostEqual(compute_closest_approach(left, right), 1.0)
+
+    def test_full_interval_is_field_mediated_when_branches_stay_spacelike(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-3.0, 0.0, 0.0)), (1.0, (-3.0, 0.0, 0.0)), (2.0, (-3.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (3.0, 0.0, 0.0)), (1.0, (3.0, 0.0, 0.0)), (2.0, (3.0, 0.0, 0.0))]),
+        )
+        self.assertEqual(field_mediation_intervals(branches_a, branches_b), ((0.0, 2.0),))
+        self.assertTrue(is_field_mediated(branches_a, branches_b))
+
+    def test_field_mediation_intervals_support_mismatched_sampling(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (1.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))]),
+        )
+        self.assertEqual(field_mediation_intervals(branches_a, branches_b), ((0.0, 2.0),))
+        self.assertTrue(is_field_mediated(branches_a, branches_b))
+
+    def test_contact_breaks_field_mediation(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))]),
+        )
+        self.assertEqual(field_mediation_intervals(branches_a, branches_b), ())
+        self.assertFalse(is_field_mediated(branches_a, branches_b))
+
+    def test_phase_matrix_is_symmetric_for_equal_charges(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (1.0, (-2.0, 0.0, 0.0))]),
+            branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (1.0, (-1.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0))]),
+            branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (1.0, (2.0, 0.0, 0.0))]),
+        )
+        matrix = compute_branch_phase_matrix(branches_a, branches_b, mass=0.5)
+        self.assertAlmostEqual(matrix[0][0], matrix[1][1])
+        self.assertLess(matrix[1][0], matrix[0][0])
+
+    def test_relative_entangling_phase_detects_branch_dependence(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (1.0, (-2.0, 0.0, 0.0))]),
+            branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (1.0, (-1.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0))]),
+            branch("B1", 1.0, [(0.0, (3.0, 0.0, 0.0)), (1.0, (3.0, 0.0, 0.0))]),
+        )
+        matrix = compute_branch_phase_matrix(branches_a, branches_b, mass=0.25)
+        self.assertNotEqual(compute_entanglement_phase(matrix, 0, 1, 0, 1), 0.0)
+
+    def test_phase_matrix_is_stable_under_time_resampling(self) -> None:
+        # 같은 세계선이라면 샘플 밀도가 달라도 적분 위상은 같아야 한다.
+        coarse = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        fine = branch(
+            "A0",
+            1.0,
+            [(0.0, (-2.0, 0.0, 0.0)), (1.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))],
+        )
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (1.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        coarse_matrix = compute_branch_phase_matrix((coarse,), (target,), mass=0.5)
+        fine_matrix = compute_branch_phase_matrix((fine,), (target,), mass=0.5)
+        self.assertAlmostEqual(coarse_matrix[0][0], fine_matrix[0][0])
+
+    def test_retarded_phase_is_smaller_when_signal_has_not_fully_arrived(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        instantaneous = compute_branch_phase_matrix((source,), (target,), mass=0.0)
+        retarded = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="retarded")
+        self.assertLess(abs(retarded[0][0]), abs(instantaneous[0][0]))
+        self.assertAlmostEqual(retarded[0][0], -1.0 / (4.0 * pi), places=12)
+
+    def test_retarded_phase_respects_light_speed_parameter(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        faster = compute_branch_phase_matrix(
+            (source,),
+            (target,),
+            mass=0.0,
+            propagation="retarded",
+            light_speed=2.0,
+        )
+        slower = compute_branch_phase_matrix(
+            (source,),
+            (target,),
+            mass=0.0,
+            propagation="retarded",
+            light_speed=0.5,
+        )
+        self.assertLess(abs(slower[0][0]), abs(faster[0][0]))
+
+    def test_time_symmetric_phase_sits_between_directional_retarded_orders(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-4.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0)), (4.0, (4.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (1.0, 1.0, 0.0)), (4.0, (2.0, 1.0, 0.0))])
+        forward = compute_branch_phase_matrix((moving,), (static,), mass=0.0, propagation="retarded")
+        backward = compute_branch_phase_matrix((static,), (moving,), mass=0.0, propagation="retarded")
+        symmetric = compute_branch_phase_matrix((moving,), (static,), mass=0.0, propagation="time_symmetric")
+        low = min(forward[0][0], backward[0][0])
+        high = max(forward[0][0], backward[0][0])
+        self.assertGreaterEqual(symmetric[0][0], low)
+        self.assertLessEqual(symmetric[0][0], high)
+
+    def test_causal_history_is_sensitive_to_past_source_support(self) -> None:
+        short_source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        long_source = branch("A0", 1.0, [(-2.0, (0.0, 0.0, 0.0)), (0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.5, (1.0, 0.0, 0.0)), (3.0, (1.0, 0.0, 0.0))])
+        short_history = compute_branch_phase_matrix((short_source,), (target,), mass=0.5, propagation="causal_history")
+        long_history = compute_branch_phase_matrix((long_source,), (target,), mass=0.5, propagation="causal_history")
+        self.assertGreater(abs(long_history[0][0]), abs(short_history[0][0]))
+
+    def test_causal_history_vanishes_without_past_light_cone_overlap(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (0.4, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (0.4, (2.0, 0.0, 0.0))])
+        causal_history = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="causal_history")
+        self.assertAlmostEqual(causal_history[0][0], 0.0)
+
+    def test_kg_retarded_reduces_to_retarded_when_massless(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        retarded = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="retarded")
+        kg_retarded = compute_branch_phase_matrix((source,), (target,), mass=0.0, propagation="kg_retarded")
+        self.assertAlmostEqual(retarded[0][0], kg_retarded[0][0], places=12)
+
+    def test_kg_retarded_is_sensitive_to_tail_history_for_massive_field(self) -> None:
+        short_source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        long_source = branch("A0", 1.0, [(-2.0, (0.0, 0.0, 0.0)), (0.0, (0.0, 0.0, 0.0)), (1.5, (0.0, 0.0, 0.0)), (3.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.5, (1.0, 0.0, 0.0)), (3.0, (1.0, 0.0, 0.0))])
+        short_history = compute_branch_phase_matrix((short_source,), (target,), mass=0.5, propagation="kg_retarded")
+        long_history = compute_branch_phase_matrix((long_source,), (target,), mass=0.5, propagation="kg_retarded")
+        self.assertGreater(abs(long_history[0][0]), abs(short_history[0][0]))
+
+    def test_sample_branch_field_returns_requested_samples(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        samples = sample_branch_field(
+            source,
+            ((0.5, (1.0, 0.0, 0.0)), (1.5, (1.0, 0.0, 0.0))),
+            mass=0.0,
+            propagation="retarded",
+        )
+        self.assertEqual(len(samples), 2)
+        self.assertGreater(samples[1].value, 0.0)
+
+    def test_phi_rs_samples_follow_target_worldline(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        samples = compute_phi_rs_samples(source, target, sample_count=3, mass=0.0, propagation="retarded")
+        self.assertEqual(samples[0].position, (1.0, 0.0, 0.0))
+        self.assertEqual(len(samples), 3)
+
+    def test_sampled_spacetime_phase_matches_pointlike_limit_at_zero_width(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        pointlike = compute_branch_phase_matrix((left,), (right,), mass=0.5, propagation="kg_retarded")
+        sampled = compute_sampled_spacetime_phase(left, right, mass=0.5, target_width=0.0, propagation="kg_retarded")
+        self.assertAlmostEqual(sampled, pointlike[0][0])
+
+    def test_sampled_spacetime_phase_changes_with_target_width(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        pointlike = compute_sampled_spacetime_phase(left, right, mass=0.5, target_width=0.0, propagation="kg_retarded")
+        finite_width = compute_sampled_spacetime_phase(left, right, mass=0.5, target_width=0.4, propagation="kg_retarded")
+        self.assertNotAlmostEqual(pointlike, finite_width)
+
+    def test_anisotropic_sampled_phase_changes_with_width_tensor(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        isotropic_like = compute_anisotropic_sampled_spacetime_phase(
+            left,
+            right,
+            mass=0.5,
+            target_widths=(0.2, 0.2, 0.2),
+            propagation="instantaneous",
+        )
+        anisotropic = compute_anisotropic_sampled_spacetime_phase(
+            left,
+            right,
+            mass=0.5,
+            target_widths=(0.2, 0.6, 0.1),
+            propagation="instantaneous",
+        )
+        self.assertNotAlmostEqual(isotropic_like, anisotropic)
+
+    def test_higher_order_quadrature_better_matches_analytic_moving_worldline_integral(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (0.0, 1.0, 0.0))])
+        expected = -asinh(1.0) / (2.0 * pi)
+        midpoint = compute_branch_phase_matrix((moving,), (static,), mass=0.0, quadrature_order=1)
+        higher_order = compute_branch_phase_matrix((moving,), (static,), mass=0.0, quadrature_order=5)
+        self.assertLess(abs(higher_order[0][0] - expected), abs(midpoint[0][0] - expected))
+        self.assertAlmostEqual(higher_order[0][0], expected, places=4)
+
+    def test_quadrature_order_must_be_positive(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (1.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (1.0, (1.0, 0.0, 0.0))])
+        with self.assertRaises(ValueError):
+            compute_branch_phase_matrix((source,), (target,), mass=0.0, quadrature_order=0)
+
+    def test_phase_breakdown_matches_instantaneous_cross_matrix(self) -> None:
+        branch_a = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        branch_b = branch("B0", 2.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        breakdown = analyze_branch_pair_phase(branch_a, branch_b, mass=0.5)
+        matrix = compute_branch_phase_matrix((branch_a,), (branch_b,), mass=0.5)
+        self.assertAlmostEqual(breakdown.directed_cross_phase_ab, matrix[0][0])
+        self.assertAlmostEqual(breakdown.directed_cross_phase_ab, breakdown.directed_cross_phase_ba)
+        self.assertAlmostEqual(breakdown.interaction_phase, matrix[0][0])
+        self.assertAlmostEqual(
+            breakdown.total_phase,
+            breakdown.self_phase_a + breakdown.interaction_phase + breakdown.self_phase_b,
+        )
+
+    def test_retarded_phase_breakdown_exposes_directional_asymmetry(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-4.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0)), (4.0, (4.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (1.0, 1.0, 0.0)), (4.0, (2.0, 1.0, 0.0))])
+        breakdown = analyze_branch_pair_phase(moving, static, mass=0.0, propagation="retarded")
+        self.assertNotAlmostEqual(breakdown.directed_cross_phase_ab, breakdown.directed_cross_phase_ba)
+        self.assertAlmostEqual(
+            breakdown.interaction_phase,
+            0.5 * (breakdown.directed_cross_phase_ab + breakdown.directed_cross_phase_ba),
+        )
+
+    def test_time_symmetric_breakdown_removes_directional_asymmetry(self) -> None:
+        moving = branch("A0", 1.0, [(0.0, (-4.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0)), (4.0, (4.0, 0.0, 0.0))])
+        static = branch("B0", 1.0, [(0.0, (0.0, 1.0, 0.0)), (2.0, (1.0, 1.0, 0.0)), (4.0, (2.0, 1.0, 0.0))])
+        breakdown = analyze_branch_pair_phase(moving, static, mass=0.0, propagation="time_symmetric")
+        self.assertAlmostEqual(breakdown.directed_cross_phase_ab, breakdown.directed_cross_phase_ba)
+        self.assertAlmostEqual(breakdown.interaction_phase, breakdown.directed_cross_phase_ab)
+
+    def test_phase_decomposition_total_matrix_combines_self_and_cross_terms(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))]),
+            branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))]),
+            branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))]),
+        )
+        decomposition = analyze_phase_decomposition(branches_a, branches_b, mass=0.5)
+        for r in range(len(branches_a)):
+            for s in range(len(branches_b)):
+                self.assertAlmostEqual(
+                    decomposition.total_matrix[r][s],
+                    decomposition.self_phases_a[r]
+                    + decomposition.interaction_matrix[r][s]
+                    + decomposition.self_phases_b[s],
+                )
+
+    def test_wavepacket_phase_recovers_point_particle_limit_at_zero_width(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        pointlike = compute_branch_phase_matrix((left,), (right,), mass=0.5)
+        wavepacket = compute_wavepacket_phase_matrix((left,), (right,), widths_a=0.0, widths_b=0.0, mass=0.5)
+        self.assertAlmostEqual(pointlike[0][0], wavepacket[0][0])
+
+    def test_wavepacket_width_softens_cross_phase_magnitude(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        narrow = compute_wavepacket_phase_matrix((left,), (right,), widths_a=0.1, widths_b=0.1, mass=0.5)
+        wide = compute_wavepacket_phase_matrix((left,), (right,), widths_a=0.8, widths_b=0.8, mass=0.5)
+        self.assertLess(abs(wide[0][0]), abs(narrow[0][0]))
+
+    def test_wavepacket_phase_decomposition_total_matrix_combines_terms(self) -> None:
+        branches_a = (
+            branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))]),
+            branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))]),
+        )
+        branches_b = (
+            branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))]),
+            branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))]),
+        )
+        decomposition = analyze_wavepacket_phase_decomposition(
+            branches_a,
+            branches_b,
+            widths_a=(0.3, 0.5),
+            widths_b=(0.4, 0.6),
+            mass=0.5,
+        )
+        for r in range(len(branches_a)):
+            for s in range(len(branches_b)):
+                self.assertAlmostEqual(
+                    decomposition.total_matrix[r][s],
+                    decomposition.self_phases_a[r]
+                    + decomposition.interaction_matrix[r][s]
+                    + decomposition.self_phases_b[s],
+                )
+
+    def test_pair_displacement_is_sum_of_single_branch_displacements(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 2.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        momenta = MOMENTA_PLANAR_2
+        displacement_left = compute_branch_displacement_amplitudes((left,), momenta, field_mass=0.5, source_width=0.2)
+        displacement_right = compute_branch_displacement_amplitudes((right,), momenta, field_mass=0.5, source_width=0.3)
+        pair = compute_branch_pair_displacements(
+            (left,),
+            (right,),
+            momenta,
+            field_mass=0.5,
+            source_width_a=0.2,
+            source_width_b=0.3,
+        )
+        for index in range(len(momenta)):
+            self.assertAlmostEqual(pair[0][0][index].real, displacement_left[0][index].real + displacement_right[0][index].real)
+            self.assertAlmostEqual(pair[0][0][index].imag, displacement_left[0][index].imag + displacement_right[0][index].imag)
+
+    def test_continuum_displacement_amplitudes_are_nonzero_for_static_source(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        amplitudes = compute_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(amplitudes), 1)
+        self.assertNotEqual(amplitudes[0], 0.0j)
+
+    def test_adaptive_continuum_displacement_returns_value(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        amplitudes = compute_adaptive_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(amplitudes), 1)
+        self.assertNotEqual(amplitudes[0], 0.0j)
+
+    def test_split_continuum_displacement_returns_value(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        amplitudes = compute_split_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(amplitudes), 1)
+        self.assertNotEqual(amplitudes[0], 0.0j)
+
+    def test_continuum_displacement_error_estimate_is_finite(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = estimate_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(result.error_estimate, 0.0)
+
+    def test_extrapolated_continuum_displacement_tracks_mode_counts(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_extrapolated_continuum_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(len(result.mode_counts), 1)
+        self.assertGreaterEqual(result.mode_counts[-1], result.mode_counts[0])
+
+    def test_spectral_continuum_error_bound_is_finite(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = estimate_spectral_continuum_error_bound((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(result.absolute_bound, 0.0)
+        self.assertGreaterEqual(result.relative_bound, 0.0)
+
+    def test_spectral_convergence_tracks_mode_counts(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = estimate_spectral_convergence((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(len(result.mode_counts), 1)
+
+    def test_certified_spectral_displacement_returns_certificate(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_certified_spectral_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.amplitudes), 1)
+        self.assertGreaterEqual(result.certificate_error, 0.0)
+
+    def test_high_order_spectral_displacement_reports_effective_order(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_high_order_spectral_displacement_amplitudes((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.certified.amplitudes), 1)
+        self.assertGreaterEqual(result.effective_order, 1)
+
+    def test_provable_spectral_control_reports_certificate(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = compute_provable_spectral_control((source,), field_mass=0.5, momentum_cutoff=1.0)
+        self.assertEqual(len(result.high_order.certified.amplitudes), 1)
+        self.assertGreaterEqual(result.strict_certificate_error, 0.0)
+
+    def test_evaluate_retarded_green_function_returns_samples(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = evaluate_retarded_green_function(
+            source,
+            samples=((1.0, (1.0, 0.0, 0.0)),),
+            mass=0.5,
+        )
+        self.assertEqual(len(result.samples), 1)
+
+    def test_displacement_phase_vanishes_for_identical_profiles(self) -> None:
+        profile = (1.0 + 2.0j, -0.5j)
+        self.assertAlmostEqual(compute_displacement_operator_phase(profile, profile), 0.0)
+
+    def test_compare_coherent_states_returns_unit_overlap_for_identical_profiles(self) -> None:
+        profile = (1.0 + 0.5j, -0.25j)
+        comparison = compare_coherent_states(profile, profile)
+        self.assertAlmostEqual(comparison.vacuum_suppression, 1.0)
+        self.assertAlmostEqual(abs(comparison.overlap), 1.0)
+
+    def test_compare_gaussian_mode_states_reduces_overlap_with_covariance_mismatch(self) -> None:
+        left = GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(0.5,))
+        right = GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(2.0,))
+        comparison = compare_gaussian_mode_states(left, right)
+        self.assertLess(comparison.vacuum_suppression, 1.0)
+
+    def test_compare_general_gaussian_states_supports_off_diagonal_covariance(self) -> None:
+        left = GeneralGaussianState(displacement=(1.0 + 0.0j, 0.0j), covariance=((1.0, 0.2), (0.2, 1.5)))
+        right = GeneralGaussianState(displacement=(1.0 + 0.0j, 0.1j), covariance=((1.2, 0.1), (0.1, 1.4)))
+        comparison = compare_general_gaussian_states(left, right)
+        self.assertLessEqual(abs(comparison.overlap), 1.0)
+
+    def test_tomograph_general_gaussian_state_returns_mean_and_covariance(self) -> None:
+        state = tomograph_general_gaussian_state(((1.0 + 0.0j, 0.0j), (0.0j, 1.0 + 0.0j)))
+        self.assertEqual(len(state.displacement), 2)
+        self.assertEqual(len(state.covariance), 2)
+
+    def test_compare_superposition_states_returns_finite_overlap(self) -> None:
+        left = ModeSuperpositionState(weights=(1.0 + 0.0j, 0.5 + 0.0j), components=((1.0 + 0.0j,), (0.0 + 0.0j,)))
+        right = ModeSuperpositionState(weights=(1.0 + 0.0j,), components=((1.0 + 0.0j,),))
+        overlap = compare_superposition_states(left, right)
+        self.assertNotEqual(overlap, 0.0j)
+
+    def test_compare_cat_mode_states_returns_finite_overlap(self) -> None:
+        left = CatModeState(
+            weights=(1.0 + 0.0j, 0.5 + 0.0j),
+            components=(
+                GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(1.0,)),
+                GaussianModeState(displacement=(-1.0 + 0.0j,), covariance_diag=(1.0,)),
+            ),
+        )
+        right = CatModeState(
+            weights=(1.0 + 0.0j,),
+            components=(GaussianModeState(displacement=(1.0 + 0.0j,), covariance_diag=(1.0,)),),
+        )
+        overlap = compare_cat_mode_states(left, right)
+        self.assertNotEqual(overlap, 0.0j)
+
+    def test_tomograph_cat_mode_state_builds_components(self) -> None:
+        state = tomograph_cat_mode_state(((1.0 + 0.0j,), (-1.0 + 0.0j,)))
+        self.assertEqual(len(state.components), 2)
+
+    def test_tomograph_multimode_family_returns_phase_matrix(self) -> None:
+        result = tomograph_multimode_family(
+            (
+                ((1.0 + 0.0j, 0.0j), (0.5 + 0.0j, 0.5 + 0.0j)),
+                ((-1.0 + 0.0j, 0.0j), (-0.5 + 0.0j, -0.5 + 0.0j)),
+            )
+        )
+        self.assertEqual(len(result.component_states), 2)
+        self.assertEqual(len(result.relative_phase_matrix), 2)
+
+    def test_symbolic_bookkeeping_returns_labels(self) -> None:
+        result = summarize_symbolic_multimode_bookkeeping(
+            (
+                ("r0", ((1.0 + 0.0j,), (0.5 + 0.0j,))),
+                ("r1", ((-1.0 + 0.0j,), (-0.5 + 0.0j,))),
+            )
+        )
+        self.assertEqual(result.labels, ("r0", "r1"))
+        self.assertEqual(len(result.relative_phase_matrix), 2)
+
+    def test_verify_multimode_analytic_identities_returns_small_errors(self) -> None:
+        result = verify_multimode_analytic_identities(
+            (
+                ("r0", ((1.0 + 0.0j,), (0.5 + 0.0j,))),
+                ("r1", ((-1.0 + 0.0j,), (-0.5 + 0.0j,))),
+            )
+        )
+        self.assertEqual(result.labels, ("r0", "r1"))
+        self.assertGreaterEqual(result.phase_antisymmetry_error, 0.0)
+        self.assertGreaterEqual(result.norm_consistency_error, 0.0)
+
+    def test_compile_multimode_state_transform_returns_overlap_matrix(self) -> None:
+        result = compile_multimode_state_transform(
+            (
+                ("r0", ((1.0 + 0.0j,), (0.5 + 0.0j,))),
+                ("r1", ((-1.0 + 0.0j,), (-0.5 + 0.0j,))),
+            )
+        )
+        self.assertEqual(result.labels, ("r0", "r1"))
+        self.assertEqual(len(result.overlap_matrix), 2)
+
+    def test_compile_comprehensive_multimode_bookkeeping_returns_all_views(self) -> None:
+        result = compile_comprehensive_multimode_bookkeeping(
+            (
+                ("r0", ((1.0 + 0.0j,), (0.5 + 0.0j,))),
+                ("r1", ((-1.0 + 0.0j,), (-0.5 + 0.0j,))),
+            )
+        )
+        self.assertEqual(result.transform.labels, ("r0", "r1"))
+        self.assertEqual(result.bookkeeping.labels, ("r0", "r1"))
+
+    def test_compile_appendix_d_bookkeeping_returns_transform_and_multimode(self) -> None:
+        result = compile_appendix_d_bookkeeping(
+            (
+                ("r0", ((1.0 + 0.0j,), (0.5 + 0.0j,))),
+                ("r1", ((-1.0 + 0.0j,), (-0.5 + 0.0j,))),
+            )
+        )
+        self.assertEqual(result.comprehensive.bookkeeping.labels, ("r0", "r1"))
+        self.assertEqual(result.state_transform.labels, ("r0", "r1"))
+
+    def test_analyze_sampled_phase_decomposition_returns_matrix(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = analyze_sampled_phase_decomposition((source,), (target,), mass=0.5, propagation="instantaneous")
+        self.assertEqual(len(result.interaction_matrix), 1)
+
+    def test_coherent_state_free_evolution_preserves_occupation_number(self) -> None:
+        momenta = MOMENTA_PLANAR_2
+        initial = (1.0 + 2.0j, -0.25 + 0.75j)
+        evolved = evolve_coherent_state(initial, momenta, field_mass=0.5, elapsed_time=3.0)
+        self.assertAlmostEqual(evolved.occupation_number, sum(abs(value) ** 2 for value in initial))
+
+    def test_branch_pair_coherent_state_tracks_pair_displacement_norm(self) -> None:
+        left = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        momenta = MOMENTA_PLANAR_3
+        pair = compute_branch_pair_displacements((left,), (right,), momenta, field_mass=0.5, source_width_a=0.2, source_width_b=0.2)
+        coherent = analyze_branch_pair_coherent_state(
+            left,
+            right,
+            momenta,
+            field_mass=0.5,
+            source_width_a=0.2,
+            source_width_b=0.2,
+            elapsed_time=1.0,
+        )
+        self.assertAlmostEqual(coherent.occupation_number, sum(abs(value) ** 2 for value in pair[0][0]))
+
+    def test_branch_pair_coherent_overlap_detects_branch_difference(self) -> None:
+        left0 = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right0 = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        left1 = branch("A1", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        right1 = branch("B1", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        momenta = MOMENTA_PLANAR_2
+        comparison = analyze_branch_pair_coherent_overlap(
+            (left0, right0),
+            (left1, right1),
+            momenta,
+            field_mass=0.5,
+            source_width_a=0.2,
+            source_width_b=0.2,
+        )
+        self.assertLess(abs(comparison.overlap), 1.0)
+
+    def test_mediated_phase_matrix_supports_gravity_sign_convention(self) -> None:
+        left = branch("A0", -2.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        right = branch("B0", 3.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        vector = compute_mediated_phase_matrix((left,), (right,), mass=0.5, mediator="vector", propagation="instantaneous")
+        gravity = compute_mediated_phase_matrix((left,), (right,), mass=0.5, mediator="gravity", propagation="instantaneous")
+        self.assertGreater(abs(gravity[0][0]), 0.0)
+        self.assertAlmostEqual(abs(gravity[0][0]), abs(vector[0][0]))
+        self.assertNotAlmostEqual(gravity[0][0], vector[0][0])
+
+    def test_sample_mediator_field_supports_gravity_mode(self) -> None:
+        source = branch("A0", -2.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        samples = sample_mediator_field(source, ((1.5, (1.0, 0.0, 0.0)),), mass=0.5, mediator="gravity", propagation="instantaneous")
+        self.assertGreater(samples[0].value, 0.0)
+
+    def test_solve_field_lattice_returns_full_grid(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        lattice = solve_field_lattice(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(lattice.samples), 4)
+
+    def test_solve_field_lattice_dynamics_returns_time_slices(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        evolution = solve_field_lattice_dynamics(
+            source,
+            time_slices=(0.0, 1.0, 2.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(evolution.lattices), 3)
+
+    def test_solve_multiscale_field_lattice_refines_spatial_grid(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        evolution = solve_multiscale_field_lattice(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+            refinement_levels=3,
+        )
+        self.assertEqual(len(evolution.levels), 3)
+        self.assertGreater(evolution.spatial_point_counts[-1], evolution.spatial_point_counts[0])
+
+    def test_solve_spectral_lattice_honors_dirichlet_boundary(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_spectral_lattice(
+            source,
+            time_slices=(0.0,),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            propagation="instantaneous",
+            boundary_condition="dirichlet",
+        )
+        self.assertEqual(result.boundary_condition, "dirichlet")
+        self.assertEqual(result.lattice.samples[0].value, 0.0)
+        self.assertEqual(result.lattice.samples[-1].value, 0.0)
+
+    def test_solve_dynamic_boundary_lattice_tracks_schedule(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_dynamic_boundary_lattice(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary_schedule=("dirichlet", "periodic"),
+            propagation="instantaneous",
+        )
+        self.assertEqual(result.boundary_schedule, ("dirichlet", "periodic"))
+        self.assertEqual(len(result.slices), 2)
+
+    def test_solve_fft_lattice_evolution_returns_damping_profile(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_fft_lattice_evolution(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary_schedule=("open", "periodic"),
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(result.slices), 2)
+        self.assertEqual(len(result.damping_profile), 2)
+
+    def test_solve_surrogate_4d_field_equation_reports_sample_count(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_surrogate_4d_field_equation(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary_schedule=("open", "periodic"),
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.total_sample_count, 1)
+
+    def test_solve_large_scale_pde_surrogate_reports_grid_points(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = solve_large_scale_pde_surrogate(
+            source,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            mass=0.5,
+            boundary_schedule=("open", "periodic"),
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.total_grid_points, 1)
+
+    def test_compute_generalized_wavepacket_phase_matrix_accepts_tensor_widths(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = compute_generalized_wavepacket_phase_matrix(
+            (source,),
+            (target,),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(result.matrix), 1)
+
+    def test_backreacted_branch_shifts_target_positions(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        updated = evolve_backreacted_branch(source, target, mass=0.5, propagation="instantaneous", response_strength=0.1)
+        self.assertNotEqual(updated.points[0].position, target.points[0].position)
+
+    def test_iterate_backreaction_accumulates_updates(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        once = evolve_backreacted_branch(source, target, mass=0.5, propagation="instantaneous", response_strength=0.05)
+        repeated = iterate_backreaction(source, target, iterations=3, mass=0.5, propagation="instantaneous", response_strength=0.05)
+        self.assertNotEqual(once.points[0].position, repeated.points[0].position)
+
+    def test_solve_coupled_backreaction_updates_both_branches(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_coupled_backreaction(
+            source,
+            target,
+            iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+            response_strength=0.05,
+        )
+        self.assertEqual(result.iterations, 2)
+        self.assertNotEqual(result.source.points[0].position, source.points[0].position)
+        self.assertNotEqual(result.target.points[0].position, target.points[0].position)
+
+    def test_solve_nonlinear_backreaction_reports_update_norm(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_nonlinear_backreaction(
+            source,
+            target,
+            iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+            response_strength=0.05,
+        )
+        self.assertEqual(result.iterations, 2)
+        self.assertGreaterEqual(result.max_update_norm, 0.0)
+
+    def test_solve_self_consistent_backreaction_reports_residual(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_self_consistent_backreaction(
+            source,
+            target,
+            max_iterations=3,
+            mass=0.5,
+            propagation="instantaneous",
+            response_strength=0.05,
+        )
+        self.assertGreaterEqual(result.iterations, 1)
+        self.assertGreaterEqual(result.residual, 0.0)
+
+    def test_solve_mediator_self_consistent_backreaction_returns_phase_shift(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_mediator_self_consistent_backreaction(
+            source,
+            target,
+            mediator="gravity",
+            max_iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(result.mediator, "gravity")
+        self.assertNotEqual(result.phase_shift, 0.0)
+
+    def test_solve_effective_field_equation_backreaction_returns_mediator_result(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_effective_field_equation_backreaction(
+            source,
+            target,
+            mediator="scalar",
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            max_iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(result.mediator, "scalar")
+        self.assertEqual(result.backreaction.mediator, "scalar")
+
+    def test_solve_gauge_gravity_field_system_returns_all_mediators(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_gauge_gravity_field_system(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            max_iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(result.scalar_result.mediator, "scalar")
+        self.assertEqual(result.vector_result.mediator, "vector")
+        self.assertEqual(result.gravity_result.mediator, "gravity")
+
+    def test_evaluate_microcausality_commutator_reports_bound(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (2.0, 0.0, 0.0)), (2.0, (2.0, 0.0, 0.0))])
+        result = evaluate_microcausality_commutator((source,), (target,))
+        self.assertTrue(result.bounded)
+        self.assertTrue(all(abs(value) <= 1e-9 for value in result.interval_commutators))
+
+    def test_evaluate_microcausality_commutator_detects_timelike_overlap(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        result = evaluate_microcausality_commutator((source,), (target,), mass=0.5)
+        self.assertFalse(result.bounded)
+        self.assertGreater(max(result.interval_commutators), 1e-6)
+
+    def test_solve_full_qft_surrogate_returns_nested_results(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_full_qft_surrogate(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            max_iterations=2,
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.pde.total_grid_points, 1)
+        self.assertTrue(result.microcausality.bounded)
+
+    def test_solve_reference_pde_control_returns_certificate(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_reference_pde_control(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.effective_grid_points, 1)
+        self.assertGreaterEqual(result.spectral_control.strict_certificate_error, 0.0)
+
+    def test_compile_universal_state_family_returns_phase_matrix(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = compile_universal_state_family(
+            (source,),
+            (target,),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(
+                ("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)),
+                ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),)),
+            ),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertEqual(len(result.generalized_wavepacket.matrix), 1)
+        self.assertEqual(len(result.overlap_phase_matrix), 2)
+
+    def test_solve_exact_mediator_surrogate_reports_consistency(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_exact_mediator_surrogate(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertTrue(result.consistent)
+        self.assertTrue(result.microcausality.bounded)
+
+    def test_close_current_limitations_returns_all_bundles(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = close_current_limitations(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(
+                ("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)),
+                ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),)),
+            ),
+            mass=0.5,
+            propagation="instantaneous",
+        )
+        self.assertGreaterEqual(result.reference_pde.effective_grid_points, 1)
+        self.assertEqual(len(result.universal_state.overlap_phase_matrix), 2)
+        self.assertTrue(result.exact_mediator.consistent)
+
+    def test_solve_high_fidelity_pde_bundle_returns_score(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_high_fidelity_pde_bundle(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)), ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),))),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertGreaterEqual(result.refined_pde.total_grid_points, 1)
+        self.assertGreaterEqual(result.fidelity_score, 0.0)
+
+    def test_compile_complete_state_family_bundle_returns_multimode(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (0.0, 0.0, 0.0)), (2.0, (0.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = compile_complete_state_family_bundle(
+            (source,),
+            (target,),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)), ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),))),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertEqual(len(result.multimode.relative_phase_matrix), 2)
+
+    def test_solve_exact_dynamics_surrogate_returns_retarded_samples(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = solve_exact_dynamics_surrogate(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertGreaterEqual(len(result.retarded_green.samples), 1)
+        self.assertTrue(result.exact_mediator.consistent)
+
+    def test_close_research_grade_limitations_returns_all_layers(self) -> None:
+        source = branch("A0", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        target = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        result = close_research_grade_limitations(
+            source,
+            target,
+            time_slices=(0.0, 1.0),
+            spatial_points=((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            boundary_schedule=("open", "periodic"),
+            widths_a=((0.2, 0.3, 0.4),),
+            widths_b=((0.3, 0.4, 0.5),),
+            labeled_mode_samples=(("A0", ((1.0 + 0.0j, 0.2 + 0.0j),)), ("B0", ((0.8 + 0.0j, 0.1 + 0.0j),))),
+            mass=0.5,
+            propagation="retarded",
+        )
+        self.assertGreaterEqual(result.high_fidelity_pde.refined_pde.total_grid_points, 1)
+        self.assertEqual(len(result.complete_state_family.multimode.relative_phase_matrix), 2)
+        self.assertGreaterEqual(len(result.exact_dynamics.retarded_green.samples), 1)
+
+    def test_composite_phase_matrix_sums_component_pairs(self) -> None:
+        a0 = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (2.0, (-2.0, 0.0, 0.0))])
+        a1 = branch("A1", 1.0, [(0.0, (-1.0, 0.0, 0.0)), (2.0, (-1.0, 0.0, 0.0))])
+        b0 = branch("B0", 1.0, [(0.0, (1.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))])
+        composite_left = CompositeBranch(label="L", components=(a0, a1))
+        composite_right = CompositeBranch(label="R", components=(b0,))
+        matrix = compute_composite_phase_matrix((composite_left,), (composite_right,), mass=0.5)
+        expected = compute_mediated_phase_matrix((a0,), (b0,), mass=0.5)[0][0] + compute_mediated_phase_matrix((a1,), (b0,), mass=0.5)[0][0]
+        self.assertAlmostEqual(matrix[0][0], expected)
+
