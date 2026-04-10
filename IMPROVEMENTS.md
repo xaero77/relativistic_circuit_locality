@@ -63,7 +63,8 @@
 
 반영 내용:
 
-- 저장소 루트에 [`sitecustomize.py`](/workspaces/relativistic_circuit_locality/sitecustomize.py)를 추가해 `src/` 레이아웃이 개발 실행에서 자동으로 인식되도록 했다.
+- 실행 경로를 editable install 기반으로 전환해 `python -m pip install -e .` 이후 별도 `PYTHONPATH` 없이 예제와 테스트를 실행할 수 있게 했다.
+- 개발 편의를 위해 넣었던 shim 패키지와 `sitecustomize.py`를 제거해 import 경로를 배포 구조와 일치시켰다.
 - [`pyproject.toml`](/workspaces/relativistic_circuit_locality/pyproject.toml)에서 runtime dependency 에 잘못 들어가 있던 `pip`를 제거했다.
 - 패키지 루트 import surface 를 검증하는 테스트를 추가했다.
 
@@ -80,11 +81,17 @@
 
 ## 우선순위 중간
 
-### 4. README 범위 축소 또는 계층화
+### [x] 4. README 범위 축소 또는 계층화
 
 - [`README.md`](/workspaces/relativistic_circuit_locality/README.md)는 구현 범위를 매우 길게 나열하고 있다.
 - 정보량은 많지만 핵심 사용 시나리오, 안정 지원 범위, 실험적 기능의 구분이 희미하다.
 - 현재 README는 소개 문서라기보다 기능 덤프에 가까워 탐색 비용이 높다.
+
+반영 내용:
+
+- [`README.md`](/workspaces/relativistic_circuit_locality/README.md)를 핵심 소개, 빠른 시작, 안정 API, 문서 링크 중심으로 축소했다.
+- 상세 기능 목록은 [`docs/API_SURFACE.md`](/workspaces/relativistic_circuit_locality/docs/API_SURFACE.md)로 분리했다.
+- 구현 가정, 안정/실험 범위, surrogate 수준, 현재 한계는 [`docs/MODEL_SCOPE.md`](/workspaces/relativistic_circuit_locality/docs/MODEL_SCOPE.md)로 정리했다.
 
 개선 방향:
 
@@ -97,10 +104,17 @@
 - 첫 진입 사용자가 저장소 목적을 빠르게 파악할 수 있다.
 - 문서 유지보수 비용이 줄어든다.
 
-### 5. 데모 코드를 시나리오별로 분리
+### [x] 5. 데모 코드를 시나리오별로 분리
 
 - [`src/relativistic_circuit_locality/demo.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/demo.py)는 428라인에 걸쳐 매우 많은 기능을 한 번에 import 하고 출력한다.
 - 데모가 풍부하다는 장점은 있지만, "최소 예제" 역할과 "기능 전시장" 역할이 충돌한다.
+
+반영 내용:
+
+- 예제 실행을 [`src/relativistic_circuit_locality/examples/`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/examples/) 아래의 시나리오별 모듈로 분리했다.
+- 공통 로직은 [`src/relativistic_circuit_locality/examples/_shared.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/examples/_shared.py)로 옮겼다.
+- `python -m relativistic_circuit_locality.examples {core|field|research}` 형태의 CLI entrypoint 를 제공한다.
+- 호환 wrapper 로 남아 있던 `demo.py`도 제거해 예제 진입점을 하나로 정리했다.
 
 개선 방향:
 
@@ -113,10 +127,16 @@
 - 예제의 학습 순서가 자연스러워진다.
 - 회귀 테스트용 샘플과 사용자용 예제를 분리하기 쉬워진다.
 
-### 6. 테스트 파일 분할 및 범주화
+### [x] 6. 테스트 파일 분할 및 범주화
 
 - 현재 테스트가 [`tests/test_scalar_field.py`](/workspaces/relativistic_circuit_locality/tests/test_scalar_field.py) 한 파일에 2,203라인으로 몰려 있다.
 - 실제로 160개 테스트가 잘 통과하지만, 실패 시 탐색성과 책임 경계가 약하다.
+
+반영 내용:
+
+- 공통 import/헬퍼는 [`tests/_shared.py`](/workspaces/relativistic_circuit_locality/tests/_shared.py)로 분리했다.
+- 테스트를 [`tests/test_core_locality.py`](/workspaces/relativistic_circuit_locality/tests/test_core_locality.py), [`tests/test_numerical_algorithms.py`](/workspaces/relativistic_circuit_locality/tests/test_numerical_algorithms.py), [`tests/test_physical_fidelity.py`](/workspaces/relativistic_circuit_locality/tests/test_physical_fidelity.py), [`tests/test_entanglement_diagnostics.py`](/workspaces/relativistic_circuit_locality/tests/test_entanglement_diagnostics.py), [`tests/test_pde_lattice.py`](/workspaces/relativistic_circuit_locality/tests/test_pde_lattice.py), [`tests/test_fundamental_limitations.py`](/workspaces/relativistic_circuit_locality/tests/test_fundamental_limitations.py), [`tests/test_extended_limitations.py`](/workspaces/relativistic_circuit_locality/tests/test_extended_limitations.py)로 분할했다.
+- 기존 단일 파일 테스트는 제거해 실패 시 책임 영역이 바로 드러나도록 바꿨다.
 
 개선 방향:
 
