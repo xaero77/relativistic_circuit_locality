@@ -196,7 +196,6 @@
 
 - `src/relativistic_circuit_locality/scalar_field.py`: 핵심 모델과 수치 계산 함수
 - `src/relativistic_circuit_locality/examples/`: 시나리오별 실행 예제. `core`, `field`, `research` 묶음으로 나뉜다.
-- `src/relativistic_circuit_locality/demo.py`: 예전 실행 경로와의 호환을 위해 전체 예제를 순서대로 실행하는 wrapper
 - `tests/test_scalar_field.py`: 단위 테스트
 - `CHAT.md`: 논문 해석, 구현된 기능, 남은 고도화 과제 정리
 
@@ -214,7 +213,6 @@ python -m pip install -e .
 python -m relativistic_circuit_locality.examples core
 python -m relativistic_circuit_locality.examples field
 python -m relativistic_circuit_locality.examples research
-python -m relativistic_circuit_locality.demo
 ```
 
 테스트 실행:
