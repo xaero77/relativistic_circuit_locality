@@ -1,13 +1,9 @@
-"""Public package entrypoints for relativistic circuit locality."""
+"""Stable entrypoints for the package's core locality model."""
 
-from . import experimental
-from .core import (
-    BranchPath,
+from .geometry import BranchPath, SplineBranchPath, TrajectoryPoint, Vector3
+from .scalar_field import (
     PairPhaseBreakdown,
     SimulationResult,
-    SplineBranchPath,
-    TrajectoryPoint,
-    Vector3,
     compute_branch_phase_matrix,
     compute_closest_approach,
     compute_entanglement_phase,
@@ -30,7 +26,6 @@ __all__ = [
     "compute_entanglement_phase",
     "compute_spline_branch_phase_matrix",
     "compute_wavepacket_phase_matrix",
-    "experimental",
     "field_mediation_intervals",
     "is_field_mediated",
     "simulate",

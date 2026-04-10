@@ -8,11 +8,17 @@
 
 ## 우선순위 높음
 
-### 1. `scalar_field.py` 모듈 분해
+### [x] 1. `scalar_field.py` 초기 모듈 분해
 
 - 현재 핵심 구현이 [`src/relativistic_circuit_locality/scalar_field.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/scalar_field.py)에 집중돼 있다.
 - 파일 크기가 7,761라인이고, 함수 171개와 클래스 75개가 한 파일에 공존한다.
 - 물리 모델, 수치 적분, 격자 해석, 개방계 근사, 상태 토모그래피, 백리액션, 보조 결과 타입이 한 모듈에 섞여 있어 변경 영향 범위를 예측하기 어렵다.
+
+반영 내용:
+
+- trajectory 및 spline 보간 책임을 [`src/relativistic_circuit_locality/geometry.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/geometry.py)로 분리했다.
+- `scalar_field.py`는 분리된 geometry 계층을 import 하도록 바꿨다.
+- 전체 파일 분해까지는 아니지만, 가장 기초적인 데이터 모델과 보간 책임을 별도 모듈로 떼어 첫 분리 단계를 반영했다.
 
 개선 방향:
 
@@ -25,11 +31,18 @@
 - 변경 단위가 작아져 리뷰와 테스트 범위를 통제하기 쉬워진다.
 - 신규 기능 추가 시 기존 기능 회귀 위험을 줄일 수 있다.
 
-### 2. 공개 API 축소 및 안정화
+### [x] 2. 공개 API 축소 및 안정화
 
 - [`src/relativistic_circuit_locality/__init__.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/__init__.py)에 매우 많은 심볼이 직접 re-export 되어 있다.
 - 현재 구조는 "무엇이 핵심 API이고 무엇이 실험적 surrogate 인지" 구분이 약하다.
 - 사용자는 import 자동완성만으로도 전체 표면적을 감당해야 하고, 향후 하위 호환성 부담이 커진다.
+
+반영 내용:
+
+- 안정 진입점만 담는 [`src/relativistic_circuit_locality/core.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/core.py)를 추가했다.
+- 확장/실험 기능은 [`src/relativistic_circuit_locality/experimental.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/experimental.py) 네임스페이스로 분리했다.
+- 패키지 루트 [`src/relativistic_circuit_locality/__init__.py`](/workspaces/relativistic_circuit_locality/src/relativistic_circuit_locality/__init__.py)는 이제 core API만 노출하고 `experimental` 모듈을 명시적으로 제공한다.
+- 데모 코드도 core와 experimental import를 구분하도록 갱신했다.
 
 개선 방향:
 
@@ -42,11 +55,17 @@
 - 패키지의 실제 지원 범위가 선명해진다.
 - 리팩터링 자유도가 높아진다.
 
-### 3. 테스트/패키징 실행 경로 정리
+### [x] 3. 테스트/패키징 실행 경로 정리
 
 - 기본 환경에서 `PYTHONPATH=src python -m unittest discover -s tests -v`는 `numpy` 미설치로 실패했다.
 - `.venv` 환경에서도 `PYTHONPATH=src` 없이는 모듈 import 가 실패했다.
 - 즉, 테스트가 "정상적인 설치 상태"보다 "특정 실행 습관"에 의존한다.
+
+반영 내용:
+
+- 저장소 루트에 [`sitecustomize.py`](/workspaces/relativistic_circuit_locality/sitecustomize.py)를 추가해 `src/` 레이아웃이 개발 실행에서 자동으로 인식되도록 했다.
+- [`pyproject.toml`](/workspaces/relativistic_circuit_locality/pyproject.toml)에서 runtime dependency 에 잘못 들어가 있던 `pip`를 제거했다.
+- 패키지 루트 import surface 를 검증하는 테스트를 추가했다.
 
 개선 방향:
 

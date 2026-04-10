@@ -2,6 +2,7 @@
 
 import unittest
 from math import asinh, exp, pi
+import relativistic_circuit_locality as package_api
 import relativistic_circuit_locality.scalar_field as scalar_field
 
 from relativistic_circuit_locality.scalar_field import (
@@ -119,6 +120,12 @@ def branch(label: str, charge: float, samples: list[tuple[float, tuple[float, fl
 
 
 class ScalarFieldTests(unittest.TestCase):
+    def test_package_root_exposes_only_core_api(self) -> None:
+        self.assertIs(package_api.BranchPath, BranchPath)
+        self.assertTrue(hasattr(package_api, "experimental"))
+        self.assertFalse(hasattr(package_api, "close_current_limitations"))
+        self.assertIs(package_api.experimental.close_current_limitations, close_current_limitations)
+
     def test_closest_approach_tracks_minimum_distance(self) -> None:
         left = branch("A0", 1.0, [(0.0, (-2.0, 0.0, 0.0)), (1.0, (-1.0, 0.0, 0.0))])
         right = branch("B0", 1.0, [(0.0, (3.0, 0.0, 0.0)), (1.0, (1.5, 0.0, 0.0))])

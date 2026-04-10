@@ -9,7 +9,6 @@ description = "Reference implementation of the core scalar-field locality constr
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.4",
-    "pip>=26.0.1",
 ]
 
 [tool.setuptools]
