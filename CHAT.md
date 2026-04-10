@@ -219,6 +219,8 @@
 ## 사용 방법
 
 ```bash
-PYTHONPATH=src python -m relativistic_circuit_locality.demo
-PYTHONPATH=src python -m unittest discover -s tests -v
+python -m relativistic_circuit_locality.examples core
+python -m relativistic_circuit_locality.examples field
+python -m relativistic_circuit_locality.examples research
+python -m unittest discover -s tests -v
 ```
